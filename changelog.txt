@@ -1,0 +1,113 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.0.11
+Date: 2026-07-15
+  Bugfixes:
+    - The built train now really keeps its train group: writing the schedule removes a train
+      from its group, so the group is now assigned last (a non-existing group is then created
+      from the train's schedule, like in vanilla).
+    - Alt-mode no longer shows the contents of the invisible loading docks as a ring of icons
+      around the building.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.10
+Date: 2026-07-15
+  Features:
+    - Train groups: when the blueprint's schedule references a train group, the built train is
+      enrolled in it (with parameter substitution in the group name). An existing group provides
+      its full schedule and interrupts on its own.
+    - Blueprint interrupts are applied to the built train when no group provides them.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.9
+Date: 2026-07-15
+  Bugfixes:
+    - Parameter substitution now also handles blueprints whose placeholder is the original icon
+      picked by the player (not only "parameter-N" ids): any rich-text tag or wait-condition
+      signal matching a declared parameter id is replaced by the chosen value.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.8
+Date: 2026-07-15
+  Features:
+    - Parameterized blueprints: when a template's blueprint uses parameters, clicking Build
+      opens a small dialog asking for each parameter value (signal picker, like the vanilla
+      placement dialog). The chosen values are substituted into station names and wait
+      conditions before the train departs. Re-import your template once to pick this up.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.7
+Date: 2026-07-15
+  Bugfixes:
+    - Schedules are now really extracted from blueprint LIBRARY records: probing a non-existent
+      member on a game object raises an error, which made the whole extraction fail silently
+      for library blueprints. The export method is now chosen by source type.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.6
+Date: 2026-07-15
+  Bugfixes:
+    - Schedule records read from the blueprint JSON are sanitized before being applied to the
+      train (unknown exported fields could make the schedule assignment fail silently).
+  Debug:
+    - Temporary diagnostics: the import message prints the blueprint source kind when no
+      schedule is found, and a built-but-manual train prints why the schedule was not applied.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.5
+Date: 2026-07-15
+  Bugfixes:
+    - The building sprite now really renders below train wheels: render_layer is ignored on a
+      crafting machine base animation, the sprite goes through a working_visualisation at the
+      "lower-object" layer instead (same approach as the trainConstructionSite mod).
+  Changes:
+    - The import message now says whether a schedule was found in the blueprint.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.4
+Date: 2026-07-15
+  Bugfixes:
+    - Trains standing on the internal track are now fully drawn: rolling stock wheels render in
+      a fixed layer below "object", so the building sprite (default layer) used to cover them.
+      The building now renders in the "floor-mechanics" layer, below the wheels.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.3
+Date: 2026-07-15
+  Bugfixes:
+    - Blueprint schedules are now also extracted from blueprints taken from the blueprint
+      LIBRARY (they are not items; their JSON is reached through export_record). Re-import
+      your templates once more if they came from the library.
+  Debug:
+    - New /tf-scan command: lists every rail and rolling stock around the hovered foundry's
+      track (positions, directions, orientations).
+---------------------------------------------------------------------------------------------------
+Version: 0.0.2
+Date: 2026-07-15
+  Bugfixes:
+    - Blueprint schedules are now actually extracted (the runtime API does not expose them; they
+      are read from the blueprint's JSON export). Re-import your templates: trains built from a
+      template whose blueprint had a schedule now depart on their own.
+    - Migration sweep: orphan internal entities left behind by previous versions (old-geometry
+      rails, docks, signals) are destroyed on load. Overlapping leftover rails could make newly
+      built trains couple askew.
+---------------------------------------------------------------------------------------------------
+Version: 0.0.1
+Date: 2026-07-14
+  Features:
+    - Initial skeleton. The foundry building (40x22, single orientation, rail exit on the west
+      side) can be placed and removed cleanly: it spawns its internal rail line, a ring of
+      linked loading docks sharing a single internal stock (feed parts with inserters anywhere
+      along the edge) and an exit signal — and destroys them all when mined, destroyed or
+      removed by script. No queue, no blueprint templates, no GUI yet.
+    - Placement requirement: place the exit gate onto the end of a rail line — one straight
+      east-west rail is required under the west exit apron (it stays yours when the foundry is
+      removed). The rest of the building collides normally with everything.
+    - Blueprint templates: click the foundry to open its window, then click the blueprint slot
+      with a train blueprint in hand. The blueprint is read at that moment only (composition,
+      orientations, colors, fuel requests, schedule when available), stored as a persistent
+      template, and stays in your hand. The train must be blueprinted on a straight track.
+      Saved templates are listed in the window and can be deleted there.
+    - Internal stock capacity: 20 stacks shared across all loading docks.
+    - Build button (green check) next to each template: checks the internal stock for the
+      required rolling stock, spawns the coupled train on the internal track (head at the
+      exit), applies colors, inserts compatible fuel from the stock into the locomotives,
+      applies the blueprint schedule when available and dispatches the train (left in manual
+      mode when the blueprint has no schedule). Clear messages when components are missing
+      (with item icons), when the track is occupied or when the exit block is not clear.
+    - Vanilla: unlocked by the "Train foundry" technology (after Advanced combinators and
+      Automated rail transportation — same tier as Smart Train Combinator).
+    - Nullius compatibility: recipe in the huge-crafting category with Nullius ingredients,
+      technology grafted after Computation and Traffic control (same tier as Smart Train
+      Combinator), item listed in the railway subgroup next to rails and signals.

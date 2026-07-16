@@ -1,0 +1,8 @@
+# Zips de release / packaging
+*.zip
+
+# Scratch : visuels ChatGPT bruts, fichiers de travail
+/tmp/
+
+# Sortie de build.sh
+/dist/
