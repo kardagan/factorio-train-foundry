@@ -1,3 +1,11 @@
+<!--
+  Description prête à coller dans le champ "Description" du mod portal Factorio.
+  Différence avec le README : les images pointent sur des URLs ABSOLUES
+  raw.githubusercontent.com (les chemins relatifs ne fonctionnent pas sur le
+  portail). Les URLs supposent que les fichiers docs/*.png sont poussés sur la
+  branche `main`. À la prochaine release, mets ce fichier à jour et recolle-le.
+-->
+
 ## Train Foundry
 
 Build complete trains from blueprint templates — no more placing locomotives and
@@ -8,7 +16,7 @@ train blueprint into it, queue it, and the foundry assembles the whole train and
 sends it off onto your network on its own — with the right composition,
 orientation, colors, fuel, schedule, train group and blueprint parameters.
 
-[img=building]
+![The foundry](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/building.png)
 
 ### How it works
 
@@ -26,7 +34,7 @@ orientation, colors, fuel, schedule, train group and blueprint parameters.
 - **Off it goes.** Once built and the track is clear, the train drives away with
   its schedule, group and fuel already set.
 
-[img=interface]
+![The interface](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/interface.png)
 
 ### Extras
 
