@@ -20,10 +20,36 @@
 
 local util = require("util")
 
-local MAIN   = "train-foundry"
-local RAIL   = "tf-rail"
-local INPUT  = "tf-input"
-local SIGNAL = "tf-signal"
+-- Styles GUI : slots d'ingrédients teintés vert (dispo) / rouge (manquant).
+-- Dérivés de slot_button avec un fond de couleur uni, pour ne pas dépendre
+-- d'un style vanilla qui n'existe pas dans toutes les versions.
+local styles = data.raw["gui-style"].default
+styles["tf_slot_ok"] = {
+  type = "button_style",
+  parent = "slot_button",
+  default_graphical_set = { base = { position = { 0, 0 }, corner_size = 8,
+    tint = { 30, 255, 40, 255 } } },
+  hovered_graphical_set = { base = { position = { 0, 0 }, corner_size = 8,
+    tint = { 90, 255, 100, 255 } } },
+  clicked_graphical_set = { base = { position = { 0, 0 }, corner_size = 8,
+    tint = { 30, 255, 40, 255 } } },
+}
+styles["tf_slot_missing"] = {
+  type = "button_style",
+  parent = "slot_button",
+  default_graphical_set = { base = { position = { 0, 0 }, corner_size = 8,
+    tint = { 255, 25, 25, 255 } } },
+  hovered_graphical_set = { base = { position = { 0, 0 }, corner_size = 8,
+    tint = { 255, 80, 80, 255 } } },
+  clicked_graphical_set = { base = { position = { 0, 0 }, corner_size = 8,
+    tint = { 255, 25, 25, 255 } } },
+}
+
+local MAIN       = "train-foundry"
+local RAIL       = "tf-rail"
+local INPUT      = "tf-input"
+local SIGNAL     = "tf-signal"
+local COMBINATOR = "tf-combinator"
 
 local GFX  = "__train-foundry__/graphics/"
 local ICON = GFX .. "foundry-icon.png"
@@ -154,25 +180,23 @@ local rail = table.deepcopy(data.raw["straight-rail"]["straight-rail"])
 rail.name = RAIL
 hide(rail)
 
--- Point de chargement : linked-container invisible, collision nulle. Tous
--- les points d'une même fonderie partagent le MÊME inventaire (link_id =
--- unit_number, posé au runtime) : un bras qui insère n'importe où sur le
--- pourtour alimente la réserve unique du bâtiment.
-local input = table.deepcopy(data.raw["linked-container"]["linked-chest"])
+-- Réserve : un VRAI coffre de fer (visible, posé sur le parvis ouest). Les
+-- bras y déposent/prennent sans souci (c'est un coffre vanilla). Solidaire
+-- de la fonderie : non minable, indestructible, créé/détruit avec elle.
+-- Fini les linked-containers invisibles (les bras ne ciblent pas une entité
+-- hidden/collision nulle).
+local input = table.deepcopy(data.raw["container"]["iron-chest"])
 input.name = INPUT
-hide(input)
-input.icons = { { icon = ICON, icon_size = 64 } }
-input.icon, input.icon_size = nil, nil
-input.collision_box = { { 0, 0 }, { 0, 0 } }
-input.collision_mask = { layers = {} }
--- 20 stacks de réserve interne (locos, wagons, fuel...) — choix gameplay.
+input.minable = nil
+input.next_upgrade = nil
+input.fast_replaceable_group = nil
+input.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
+                "no-copy-paste", "player-creation" }
 input.inventory_size = 20
-input.picture = util.empty_sprite()
--- GUI de coffre accessible : pas cliquable en jeu (non sélectionnable) mais
--- ouvrable via le bouton "Déposer / retirer" de notre fenêtre, pour charger
--- la réserve depuis l'inventaire du joueur avec l'UI vanilla.
-input.gui_mode = "all"
 input.circuit_wire_max_distance = 0
+-- Priorité de sélection AU-DESSUS du bâtiment (dont la selection box couvre
+-- le parvis) : sinon survoler le coffre sélectionne le bâtiment.
+input.selection_priority = 100
 
 -- Signal de sortie : contrôle le bloc aval et rend le segment interne
 -- unidirectionnel sortant. Visible en jeu (posé au bord du bâtiment),
@@ -181,14 +205,54 @@ local signal = table.deepcopy(data.raw["rail-signal"]["rail-signal"])
 signal.name = SIGNAL
 hide(signal)
 
+-- Connecteur circuit : un VRAI constant-combinator (visible, posé sur le
+-- parvis à côté du coffre). Le câble s'y accroche sans souci (entité
+-- vanilla câblable). Solidaire de la fonderie : non minable, indestructible.
+local combinator = table.deepcopy(
+  data.raw["constant-combinator"]["constant-combinator"])
+combinator.name = COMBINATOR
+combinator.minable = nil
+combinator.next_upgrade = nil
+combinator.fast_replaceable_group = nil
+-- hide-alt-info : pas de prévisu des signaux émis en mode alt sur le
+-- combinateur (il ne sert que de point d'accroche du câble ; le choix
+-- stock/request est dans notre fenêtre).
+combinator.flags = { "not-blueprintable", "not-deconstructable",
+                     "not-upgradable", "no-copy-paste", "player-creation",
+                     "hide-alt-info" }
+-- Priorité de sélection au-dessus du bâtiment (comme le coffre).
+combinator.selection_priority = 100
+
 -- ============================================================================
 -- Item, recette, technologie (vanilla)
 -- ============================================================================
 
 data:extend({
   { type = "recipe-category", name = "train-foundry-dummy" },
+  -- Layer de collision dédié au connecteur circuit caché (voir combinator).
 
-  main, rail, input, signal,
+  main, rail, input, signal, combinator,
+
+  -- Vue d'ensemble : bouton dans la barre de raccourcis + touche
+  -- personnalisable (défaut CTRL+ALT+F) ouvrant la liste de toutes les
+  -- fonderies, pour les piloter À DISTANCE sans se déplacer.
+  {
+    type = "custom-input",
+    name = "tf-open-overview",
+    key_sequence = "CONTROL + ALT + F",
+    action = "lua",
+  },
+  {
+    type = "shortcut",
+    name = "tf-open-overview",
+    action = "lua",
+    associated_control_input = "tf-open-overview",
+    toggleable = false,
+    icon = ICON,
+    icon_size = 64,
+    small_icon = ICON,
+    small_icon_size = 64,
+  },
 
   {
     type = "item",
@@ -207,7 +271,7 @@ data:extend({
     energy_required = 60,
     ingredients = {
       { type = "item", name = "steel-plate",          amount = 200 },
-      { type = "item", name = "concrete",             amount = 200 },
+      { type = "item", name = "concrete",             amount = 1000 },
       { type = "item", name = "electric-engine-unit", amount = 20 },
       { type = "item", name = "advanced-circuit",     amount = 50 },
       { type = "item", name = "rail",                 amount = 30 },
@@ -262,14 +326,15 @@ if mods["nullius"] then
   -- seule dans le subgroup vanilla train-transport déplacé par boblogistics.
   r.order = "nullius-h"
   r.energy_required = 80
-  -- Attention aux noms : « reinforced concrete » est l'item vanilla
-  -- refined-concrete relocalisé, le rail est l'item vanilla "rail" (produit
-  -- par la recette nullius-rail) et le « Calculateur » est l'item vanilla
+  -- Attention aux noms : le rail est l'item vanilla "rail" (produit par la
+  -- recette nullius-rail) et le « Calculateur » est l'item vanilla
   -- arithmetic-combinator (produit par la recette nullius-arithmetic-circuit,
   -- débloqué par computation, prérequis transitif de traffic-control).
+  -- Brique de pierre (dispo tôt) plutôt que le béton armé nullius (trop loin
+  -- dans l'arbre), en gros volume vu la taille du bâtiment.
   r.ingredients = {
     { type = "item", name = "nullius-steel-beam",    amount = 40 },
-    { type = "item", name = "refined-concrete",      amount = 100 },
+    { type = "item", name = "stone-brick",           amount = 1000 },
     { type = "item", name = "nullius-motor-2",       amount = 8 },
     { type = "item", name = "arithmetic-combinator", amount = 10 },
     { type = "item", name = "rail",                  amount = 20 },

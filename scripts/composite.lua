@@ -15,9 +15,17 @@
 
 local composite = {}
 
-local RAIL   = "tf-rail"
-local INPUT  = "tf-input"
-local SIGNAL = "tf-signal"
+local RAIL       = "tf-rail"
+local INPUT      = "tf-input"
+local SIGNAL     = "tf-signal"
+local COMBINATOR = "tf-combinator"
+
+-- Réserve (coffre de fer visible) et connecteur circuit (combinator visible),
+-- posés sur le PARVIS ouest, dans la zone libre hors collision (x < -18) :
+-- de vraies entités que les bras et l'outil fil savent cibler. Un peu à
+-- l'écart de la voie de sortie (rangée +5) pour rester accessibles.
+local INPUT_OFFSET      = { -19.5, -1.5 }  -- coffre de fer (réserve)
+local COMBINATOR_OFFSET = { -19.5,  1.5 }  -- connecteur circuit
 
 -- Les rails du jeu vivent sur les coordonnées IMPAIRES, alors que le
 -- bâtiment (build_grid_size = 2) est snappé sur les PAIRES — vérifié
@@ -45,24 +53,6 @@ local JUNCTION_RAIL_OFFSET = { -19, 5 }
 local SIGNAL_OFFSET = { -19.5, 3.5 }
 local SIGNAL_DIRECTION = defines.direction.east
 
--- Points de chargement : un linked-container par tuile du pourtour intérieur
--- de la PARTIE BÂTIE (x ≥ -17.5 : le parvis ouest hors collision n'en a
--- pas), sauf les tuiles de la voie. Tous partagent le même inventaire via
--- link_id = unit_number : un bras qui insère n'importe où sur le bord
--- alimente la réserve unique de la fonderie.
-local INPUT_OFFSETS = {}
-for i = 0, 37 do
-  local x = -17.5 + i
-  INPUT_OFFSETS[#INPUT_OFFSETS + 1] = { x, -10.5 }
-  INPUT_OFFSETS[#INPUT_OFFSETS + 1] = { x, 10.5 }
-end
-for i = 0, 19 do
-  local y = -9.5 + i
-  INPUT_OFFSETS[#INPUT_OFFSETS + 1] = { 19.5, y }
-  if y < 3.5 or y > 6.5 then
-    INPUT_OFFSETS[#INPUT_OFFSETS + 1] = { -17.5, y }
-  end
-end
 
 -- Le rail de raccord est-il présent ? (exigence de pose)
 function composite.has_junction_rail(entity)
@@ -96,10 +86,14 @@ function composite.build(entity)
   local state = {
     entity = entity,
     rails = {},
-    inputs = {},
+    input = nil,       -- coffre de fer (réserve) sur le parvis
     signal = nil,
+    combinator = nil,  -- connecteur circuit sur le parvis
     templates = {},  -- milestone 2 : templates de blueprints
     queue = {},      -- milestone 3 : file de construction
+    -- Mode d'émission circuit : "stock" ou "request" (par défaut le stock ;
+    -- pour ne rien émettre, ne pas brancher de câble).
+    emit_mode = "stock",
   }
 
   for _, x in ipairs(RAIL_XS) do
@@ -121,16 +115,17 @@ function composite.build(entity)
   end
 
   state.signal = place(entity, SIGNAL, SIGNAL_OFFSET, SIGNAL_DIRECTION)
-
-  for _, offset in ipairs(INPUT_OFFSETS) do
-    local c = place(entity, INPUT, offset, defines.direction.north)
-    if c then
-      c.link_id = entity.unit_number
-      state.inputs[#state.inputs + 1] = c
-    end
-  end
+  state.input = place(entity, INPUT, INPUT_OFFSET, defines.direction.north)
+  state.combinator = place(entity, COMBINATOR, COMBINATOR_OFFSET,
+    defines.direction.north)
 
   return state
+end
+
+-- Le coffre de réserve (ou nil).
+function composite.reserve(state)
+  if state.input and state.input.valid then return state.input end
+  return nil
 end
 
 -- Répare le signal de sortie d'un state existant : un signal absent, invalide
@@ -147,42 +142,72 @@ function composite.repair_signal(state)
   state.signal = place(e, SIGNAL, SIGNAL_OFFSET, SIGNAL_DIRECTION)
 end
 
--- Détruit proprement toutes les entités cachées. L'inventaire (partagé entre
--- tous les points de chargement) est déversé au sol pour ne rien perdre.
+-- Connecteur circuit : (re)crée-le pour les fonderies d'avant cette version.
+function composite.ensure_combinator(state)
+  if state.combinator and state.combinator.valid then return end
+  local e = state.entity
+  if not (e and e.valid) then return end
+  local pos = { e.position.x + COMBINATOR_OFFSET[1],
+                e.position.y + COMBINATOR_OFFSET[2] }
+  state.combinator = e.surface.find_entities_filtered({
+    name = COMBINATOR, position = pos, radius = 1 })[1]
+    or place(e, COMBINATOR, COMBINATOR_OFFSET, defines.direction.north)
+end
+
+-- Coffre de réserve : (re)crée-le pour les fonderies d'avant cette version.
+function composite.ensure_input(state)
+  if state.input and state.input.valid then return end
+  local e = state.entity
+  if not (e and e.valid) then return end
+  local pos = { e.position.x + INPUT_OFFSET[1], e.position.y + INPUT_OFFSET[2] }
+  state.input = e.surface.find_entities_filtered({
+    name = INPUT, position = pos, radius = 1 })[1]
+    or place(e, INPUT, INPUT_OFFSET, defines.direction.north)
+end
+
+-- Détruit proprement toutes les entités enfants. Le contenu du coffre de
+-- réserve est déversé au sol pour ne rien perdre.
 function composite.destroy(state)
   if not state then return end
 
-  local first = nil
-  for _, c in ipairs(state.inputs or {}) do
-    if c.valid then first = c break end
-  end
-  if first then
-    local inv = first.get_inventory(defines.inventory.chest)
+  local chest = composite.reserve(state)
+  if chest then
+    local inv = chest.get_inventory(defines.inventory.chest)
     if inv and not inv.is_empty() then
       for i = 1, #inv do
         local stack = inv[i]
         if stack.valid_for_read then
-          first.surface.spill_item_stack({
-            position = first.position,
+          chest.surface.spill_item_stack({
+            position = chest.position,
             stack = stack,
             enable_looted = true,
-            force = first.force,
+            force = chest.force,
           })
         end
       end
     end
   end
+  if state.input and state.input.valid then
+    state.input.destroy()
+  end
+  -- Champs legacy des vieilles saves (anneau de quais, ancien coffre).
   for _, c in ipairs(state.inputs or {}) do
     if c.valid then c.destroy() end
   end
-
-  -- Champ legacy des vieilles saves (l'ancien coffre requester tf-chest).
   if state.chest and state.chest.valid then
     state.chest.destroy()
   end
 
   if state.signal and state.signal.valid then
     state.signal.destroy()
+  end
+
+  if state.combinator and state.combinator.valid then
+    state.combinator.destroy()
+  end
+  -- Legacy : ancien tableau de 4 combinators.
+  for _, c in ipairs(state.combinators or {}) do
+    if c.valid then c.destroy() end
   end
 
   for _, r in ipairs(state.rails or {}) do

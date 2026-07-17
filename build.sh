@@ -7,18 +7,14 @@
 # (factorio_version + borne base + numéro). On dérive donc deux zips d'un même
 # code.
 #
-# Convention de version (le MINOR encode le canal de jeu) :
-#   info.json porte le VRAI semver du mod (ex. 1.0.0) = la release Factorio 2.0.
-#   La release Factorio 2.1 reprend le même code avec le MINOR +1 (ex. 1.1.0).
-#   => minor PAIR (0,2,4...) = canal Factorio 2.0 ; minor IMPAIR (1,3,5...) = 2.1.
-#   Un fix se fait par un bump de PATCH sur les DEUX canaux : 1.0.0 -> 1.0.1 (2.0)
-#   et 1.1.0 -> 1.1.1 (2.1) ; le patch reste donc libre pour les correctifs.
-#   La nature feature/correctif est portée par changelog.txt, pas par le numéro.
-#
-#   ATTENTION collision : pour une release de FEATURE, avancer le minor canonique
-#   d'AU MOINS 2 (1.0.x -> 1.2.x), afin que le 2.1 dérivé (1.3.x) ne réutilise
-#   jamais un minor impair déjà sorti (1.1.x). Quand on abandonnera 2.0, on
-#   supprimera la cible 2.0 et le mod reprendra un versioning continu sans delta.
+# Convention de version :
+#   info.json porte le semver canonique = la release Factorio 2.0 (ex. 0.1.0).
+#   La release Factorio 2.1 reprend le même code avec le MINOR +1 (ex. 0.2.0).
+#   Une nouvelle version se fait en avançant le minor canonique d'AU MOINS 2
+#   (0.1.0 -> 0.3.0), pour que le 2.1 dérivé (0.4.0) ne réutilise jamais un
+#   minor déjà sorti. Le patch reste libre pour les correctifs (0.1.0 -> 0.1.1
+#   côté 2.0, dérivé 0.2.1 côté 2.1). La nature feature/fix est portée par
+#   changelog.txt, pas par le numéro.
 #
 # Usage :
 #   ./build.sh package        # génère dist/...-_1.0.0.zip (2.0) et _1.1.0.zip (2.1)

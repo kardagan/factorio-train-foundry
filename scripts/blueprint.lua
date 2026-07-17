@@ -18,6 +18,28 @@ local ROLLING_TYPES = {
   ["artillery-wagon"] = true,
 }
 
+-- Entités TOLÉRÉES en plus du train : la voie sur laquelle il est posé
+-- (rails, signaux, gares) est naturelle dans un blueprint de train. Toute
+-- autre entité (bras, coffres, tapis, poteaux...) rend le BP « impur » et
+-- l'import est refusé.
+local ALLOWED_EXTRA_TYPES = {
+  ["straight-rail"] = true,
+  ["curved-rail-a"] = true,
+  ["curved-rail-b"] = true,
+  ["half-diagonal-rail"] = true,
+  ["legacy-straight-rail"] = true,
+  ["legacy-curved-rail"] = true,
+  ["elevated-straight-rail"] = true,
+  ["elevated-curved-rail-a"] = true,
+  ["elevated-curved-rail-b"] = true,
+  ["elevated-half-diagonal-rail"] = true,
+  ["rail-ramp"] = true,
+  ["rail-support"] = true,
+  ["rail-signal"] = true,
+  ["rail-chain-signal"] = true,
+  ["train-stop"] = true,
+}
+
 -- Compte par type pour les messages ("2 locomotives + 4 wagons").
 function blueprint.counts(template)
   local locos, wagons = 0, 0
@@ -81,14 +103,24 @@ function blueprint.parse(source)
   end
 
   local stock = {}
+  local intruders = {}
   for _, e in ipairs(ents) do
     local proto = prototypes.entity[e.name]
-    if proto and ROLLING_TYPES[proto.type] then
+    local ptype = proto and proto.type
+    if ptype and ROLLING_TYPES[ptype] then
       stock[#stock + 1] = e
+    elseif not (ptype and ALLOWED_EXTRA_TYPES[ptype]) then
+      -- Entité hors train et hors voie : BP impur.
+      intruders["[item=" .. e.name .. "]"] = true
     end
   end
   if #stock == 0 then
     return nil, "import-no-train"
+  end
+  if next(intruders) then
+    local names = {}
+    for tag in pairs(intruders) do names[#names + 1] = tag end
+    return nil, "import-not-clean", table.concat(names, " ")
   end
 
   -- Le train du blueprint doit être posé sur une voie DROITE : on détecte
@@ -163,6 +195,10 @@ function blueprint.parse(source)
       -- Blueprint paramétré : les placeholders (parameter-0, ...) devront
       -- être demandés au joueur avant la construction.
       template.parameters = json.blueprint.parameters
+      -- Identité visuelle du blueprint : son nom et ses icônes, affichés
+      -- dans le livre de plans de la fonderie.
+      template.label = json.blueprint.label
+      template.icons = json.blueprint.icons
     end
   end
 

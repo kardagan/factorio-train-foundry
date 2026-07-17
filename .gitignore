@@ -6,3 +6,6 @@
 
 # Sortie de build.sh
 /dist/
+
+# Notes de développement internes (mémo Claude)
+/CLAUDE.md

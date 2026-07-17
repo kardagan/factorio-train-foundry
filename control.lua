@@ -2,11 +2,17 @@
 --
 -- MODÈLE : le bâtiment visible (assembling-machine "train-foundry", une seule
 -- orientation, sortie ouest) est l'entité maîtresse ; à la pose,
--- composite.build crée ses enfants cachés (rails internes, anneau de points
--- de chargement liés, signal de sortie) et le tout est rangé dans
+-- composite.build crée ses enfants cachés (anneau de points de chargement
+-- liés, signal de sortie) et le tout est rangé dans
 -- storage.foundries[unit_number]. À la dépose (minage, mort, script),
 -- composite.destroy nettoie tout. Aucun état hors storage (déterminisme
 -- multijoueur).
+--
+-- PRODUCTION (M3) : chaque fonderie a une file d'attente (st.queue) et un
+-- travail en cours (st.work). La boucle on_nth_tick fait avancer chaque
+-- fonderie : attente des composants -> consommation -> construction (durée
+-- proportionnelle au nombre de véhicules) -> attente de voie/sortie libre ->
+-- spawn du train -> entrée suivante.
 
 local composite = require("scripts.composite")
 local blueprint = require("scripts.blueprint")
@@ -15,13 +21,17 @@ local gui = require("scripts.gui")
 
 local MAIN = "train-foundry"
 
+-- La boucle tourne toutes les 30 ticks (0,5 s).
+local TICK_INTERVAL = 30
+
 -- ----------------------------------------------------------------------------
 -- Storage : init lazy idempotente, appelée en tête de chaque handler
 -- (convention défensive — les vieilles saves passent par là aussi).
 -- ----------------------------------------------------------------------------
 
 local function ensure_storage()
-  -- unit_number -> { entity, rails = {}, inputs = {}, signal, templates, queue }
+  -- unit_number -> { entity, rails = {}, inputs = {}, signal,
+  --                  templates = {}, queue = {}, work = nil }
   storage.foundries = storage.foundries or {}
 end
 
@@ -37,9 +47,13 @@ local function migrate_all()
   end
   for un, st in pairs(storage.foundries) do
     st.rails = st.rails or {}
-    st.inputs = st.inputs or {}
     st.templates = st.templates or {}
     st.queue = st.queue or {}
+    -- Migration de l'ancien couple de booléens vers emit_mode.
+    if st.emit_mode == nil then
+      st.emit_mode = st.emit_request and "request" or "stock"
+      st.emit_stock, st.emit_request = nil, nil
+    end
     if not (st.entity and st.entity.valid) then
       composite.destroy(st)
       storage.foundries[un] = nil
@@ -47,6 +61,10 @@ local function migrate_all()
       -- Répare les signaux détachés (mauvaise direction dans les vieilles
       -- versions : ils clignotaient sans gouverner le bloc).
       composite.repair_signal(st)
+      -- Crée le coffre de réserve et le connecteur circuit sur les fonderies
+      -- d'avant leur refonte (anneau de quais / 4 coins → coffre + combi).
+      composite.ensure_input(st)
+      composite.ensure_combinator(st)
     end
   end
 
@@ -62,12 +80,16 @@ local function migrate_all()
   end
   for _, st in pairs(storage.foundries) do
     for _, r in ipairs(st.rails or {}) do ref(r) end
-    for _, c in ipairs(st.inputs or {}) do ref(c) end
+    ref(st.input)
     ref(st.signal)
+    ref(st.combinator)
+    -- Legacy : anneau de quais + 4 combinators d'anciennes versions.
+    for _, c in ipairs(st.inputs or {}) do ref(c) end
+    for _, c in ipairs(st.combinators or {}) do ref(c) end
   end
   for _, surface in pairs(game.surfaces) do
     for _, ent in pairs(surface.find_entities_filtered({
-      name = { "tf-rail", "tf-input", "tf-signal" } })) do
+      name = { "tf-rail", "tf-input", "tf-signal", "tf-combinator" } })) do
       local key = ent.name .. ":" .. ent.position.x .. ":" .. ent.position.y
       if not referenced[key] then
         ent.destroy()
@@ -84,12 +106,13 @@ script.on_configuration_changed(migrate_all)
 -- ----------------------------------------------------------------------------
 
 -- Annule une pose invalide : l'item revient au joueur (ou est déversé au sol
--- pour une pose robot/script), l'entité est retirée.
-local function cancel_build(event, e)
+-- pour une pose robot/script), l'entité est retirée. `msg_key` = clé du
+-- message affiché (section [tf-msg]).
+local function cancel_build(event, e, msg_key)
   local player = event.player_index and game.get_player(event.player_index)
   if player then
     player.create_local_flying_text({
-      text = { "tf-msg.need-rails" },
+      text = { "tf-msg." .. (msg_key or "need-rails") },
       position = e.position,
     })
     player.mine_entity(e, true)
@@ -109,11 +132,18 @@ local function on_built(event)
   local e = event.entity or event.created_entity
   if not (e and e.valid) then return end
   if e.name ~= MAIN then return end
+  -- Limite : UNE fonderie par surface (planète / plateforme spatiale).
+  for _, st in pairs(storage.foundries) do
+    if st.entity and st.entity.valid and st.entity.surface == e.surface then
+      cancel_build(event, e, "one-per-surface")
+      return
+    end
+  end
   -- Exigence de pose : un rail droit est-ouest existant à la position de
   -- raccord, sous le parvis ouest (la porte se pose sur l'extrémité d'une
   -- voie). Le reste des collisions est géré par le moteur (mask par défaut).
   if not composite.has_junction_rail(e) then
-    cancel_build(event, e)
+    cancel_build(event, e, "need-rails")
     return
   end
   storage.foundries[e.unit_number] = composite.build(e)
@@ -124,7 +154,12 @@ local function on_removed(event)
   local e = event.entity
   if not (e and e.valid) then return end
   if e.name ~= MAIN then return end
-  composite.destroy(storage.foundries[e.unit_number])
+  local st = storage.foundries[e.unit_number]
+  -- Rend les composants d'une construction en cours avant le nettoyage.
+  if st and st.work and st.work.phase ~= "waiting" and st.work.need then
+    builder.refund(st, st.work.need)
+  end
+  composite.destroy(st)
   storage.foundries[e.unit_number] = nil
 end
 
@@ -157,34 +192,184 @@ script.on_event(defines.events.on_entity_cloned, function(event)
 end)
 
 -- ----------------------------------------------------------------------------
--- GUI : au clic sur la fonderie, on remplace la fenêtre vanilla d'assembleur
--- (vide, la machine n'a pas de recette) par notre fenêtre : slot de dépôt de
--- blueprint + liste des templates.
+-- Boucle de production : file d'attente -> composants -> construction ->
+-- sortie. Une passe par fonderie toutes les TICK_INTERVAL ticks.
+-- ----------------------------------------------------------------------------
+
+local function process_foundry(st)
+  local work = st.work
+  if not work then
+    if #st.queue == 0 then return end
+    work = {
+      entry = table.remove(st.queue, 1),
+      phase = "waiting",
+      progress = 0,
+    }
+    st.work = work
+  end
+  local template = work.entry.template
+
+  if work.phase == "waiting" then
+    -- Attente des composants (et d'une voie libre pour poser le châssis).
+    work.need = work.need or builder.compute_need(template)
+    local miss = builder.missing(st, work.need)
+    work.missing = miss
+    if next(miss) then
+      work.blocked = "components"
+    elseif not builder.track_free(st) then
+      work.blocked = "track"
+    else
+      work.blocked = nil
+      builder.consume(st, work.need)
+      work.phase = "building"
+      work.progress = 0
+      work.total_ticks = #template.stock * builder.TICKS_PER_VEHICLE
+    end
+  elseif work.phase == "building" then
+    work.progress = math.min(1,
+      work.progress + TICK_INTERVAL / work.total_ticks)
+    if work.progress >= 1 then
+      work.phase = "ready"
+    end
+  elseif work.phase == "ready" then
+    -- Sortie : voie interne libre (le train précédent est parti) et bloc
+    -- de sortie ouvert.
+    if builder.track_free(st) and builder.exit_open(st) then
+      local ok = builder.spawn(st, template, work.entry.params)
+      if not ok then
+        -- Échec dur de la pose : on rend les composants plutôt que de
+        -- bloquer la file.
+        builder.refund(st, work.need)
+      end
+      st.work = nil
+    end
+  end
+end
+
+script.on_nth_tick(TICK_INTERVAL, function()
+  ensure_storage()
+  for _, st in pairs(storage.foundries) do
+    if st.entity and st.entity.valid then
+      process_foundry(st)
+      builder.update_circuit(st)
+    end
+  end
+  -- Rafraîchit les sections dynamiques des fenêtres ouvertes.
+  for _, player in pairs(game.connected_players) do
+    local un = gui.window_unit_number(player)
+    if un then
+      local st = storage.foundries[un]
+      if st and st.entity and st.entity.valid then
+        gui.refresh_dynamic(player, st)
+      else
+        gui.close(player)
+      end
+    end
+  end
+end)
+
+-- ----------------------------------------------------------------------------
+-- GUI : ouverture, imports, file d'attente.
 -- ----------------------------------------------------------------------------
 
 -- Lit le blueprint et l'enregistre comme template de la fonderie. Le BP est
 -- lu à ce moment-là uniquement, et reste au joueur.
 local function import_into(state, stack)
-  local template, err = blueprint.parse(stack)
-  if not template then return nil, err end
-  template.name = "Train " .. (#state.templates + 1)
+  local template, err, detail = blueprint.parse(stack)
+  if not template then return nil, err, detail end
+  -- Nom = label du blueprint ; VIDE si le plan n'a pas de titre (pas de
+  -- "Train N" par défaut — l'icône du plan suffit à l'identifier).
+  template.name = (template.label and template.label ~= "" and template.label)
+    or ""
   state.templates[#state.templates + 1] = template
   return template
+end
+
+-- Met un template en file (avec ses paramètres éventuels).
+local function enqueue(state, template, params)
+  state.queue[#state.queue + 1] = {
+    name = template.name,
+    template = template,
+    params = params,
+  }
 end
 
 script.on_event(defines.events.on_gui_opened, function(event)
   if event.gui_type ~= defines.gui_type.entity then return end
   local e = event.entity
-  if not (e and e.valid and e.name == MAIN) then return end
+  if not (e and e.valid) then return end
   ensure_storage()
   local player = game.get_player(event.player_index)
   if not player then return end
-  local st = storage.foundries[e.unit_number]
+
+  -- Clic sur le bâtiment OU le combinateur → notre fenêtre. Le COFFRE, lui,
+  -- garde sa GUI vanilla (on peut y déposer à la main). Le combinateur ne
+  -- sert que de point d'accroche du câble (choix stock/request dans notre
+  -- fenêtre déportée), donc pas de GUI vanilla pour lui.
+  local st
+  if e.name == MAIN then
+    st = storage.foundries[e.unit_number]
+  elseif e.name == "tf-combinator" then
+    for _, s in pairs(storage.foundries) do
+      if s.combinator == e then st = s break end
+    end
+  end
   if not st then return end
   gui.open(player, st)
-  -- Referme la GUI vanilla d'assembleur qui s'ouvrait (notre fenêtre est
-  -- flottante et vit sa vie indépendamment de player.opened).
+  -- Ferme la GUI vanilla (assembleur / combinateur) ; la nôtre est flottante.
   player.opened = nil
+end)
+
+-- Raccourci (barre du bas + touche) : ouvre directement l'UI de la fonderie
+-- de la surface courante — le but du mod : la piloter sans se déplacer
+-- jusqu'à elle. (Une seule fonderie par surface.)
+local function open_overview(player)
+  ensure_storage()
+  local surface = player.physical_surface or player.surface
+  for _, st in pairs(storage.foundries) do
+    if st.entity and st.entity.valid and st.entity.surface == surface then
+      gui.open(player, st)
+      return
+    end
+  end
+  player.print({ "tf-msg.no-foundry-here" })
+end
+
+script.on_event(defines.events.on_lua_shortcut, function(event)
+  if event.prototype_name ~= "tf-open-overview" then return end
+  local player = game.get_player(event.player_index)
+  if player then open_overview(player) end
+end)
+
+script.on_event("tf-open-overview", function(event)
+  local player = game.get_player(event.player_index)
+  if player then open_overview(player) end
+end)
+
+-- Recale la fenêtre circuit déportée quand on déplace la principale.
+script.on_event(defines.events.on_gui_location_changed, function(event)
+  local el = event.element
+  if el and el.valid and el.name == gui.WINDOW then
+    local player = game.get_player(event.player_index)
+    if player then gui.reposition_circuit(player) end
+  end
+end)
+
+-- Radios du circuit : émettre le stock OU les requests (exclusif).
+script.on_event(defines.events.on_gui_checked_state_changed, function(event)
+  local el = event.element
+  if not (el and el.valid and el.tags and el.tags.tf_emit_mode) then return end
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  local un = gui.window_unit_number(player)
+  if not un then return end
+  ensure_storage()
+  local st = storage.foundries[un]
+  if not (st and st.entity and st.entity.valid) then return end
+  st.emit_mode = el.tags.tf_emit_mode
+  -- Radios exclusifs : décoche l'autre bouton.
+  gui.set_emit_mode(player, st.emit_mode)
+  builder.update_circuit(st)
 end)
 
 script.on_event(defines.events.on_gui_click, function(event)
@@ -195,6 +380,20 @@ script.on_event(defines.events.on_gui_click, function(event)
 
   if el.name == "tf-close" then
     gui.close(player)
+    return
+  end
+
+  if el.name == "tf-circuit-toggle" then
+    local un = gui.window_unit_number(player)
+    local st = un and storage.foundries[un]
+    if st and st.entity and st.entity.valid then
+      gui.toggle_circuit(player, st)
+    end
+    return
+  end
+  if el.name == "tf-circuit-close" then
+    local w = player.gui.screen[gui.CIRCUIT_WINDOW]
+    if w then w.destroy() end
     return
   end
 
@@ -212,17 +411,8 @@ script.on_event(defines.events.on_gui_click, function(event)
     local p_st = storage.foundries[p_un]
     local t = p_st and p_st.templates[p_index]
     if not t then return end
-    local ok, err, detail = builder.try_spawn(p_st, t, params)
-    if ok then
-      player.print({ "tf-msg." .. ok, t.name })
-      if ok == "spawn-ok-manual" and detail then
-        player.print("[tf] schedule: " .. detail)
-      end
-    elseif detail then
-      player.print({ "tf-msg." .. err, detail })
-    else
-      player.print({ "tf-msg." .. err })
-    end
+    enqueue(p_st, t, params)
+    gui.refresh_queue(player, p_st)
     return
   end
 
@@ -235,81 +425,47 @@ script.on_event(defines.events.on_gui_click, function(event)
     return
   end
 
-  if el.name == "tf-open-stock" then
-    -- Ouvre le coffre natif de la réserve (UI vanilla avec l'inventaire du
-    -- joueur en face) ; notre fenêtre flottante reste ouverte à côté.
-    for _, c in ipairs(st.inputs or {}) do
-      if c.valid then
-        player.opened = c
-        break
-      end
-    end
-  elseif el.name == "tf-bp-slot" then
-    -- Dépôt : cliquer sur le slot avec le blueprint en main (item de
-    -- l'inventaire OU blueprint de la bibliothèque — cursor_record). Le BP
-    -- est lu à ce moment-là uniquement, puis reste en main.
-    local template, err = import_into(st,
+  if el.tags and el.tags.tf_action == "empty-slot" then
+    -- Case vide du livre : cliquer avec un blueprint en main (item de
+    -- l'inventaire OU blueprint de la bibliothèque — cursor_record) pour
+    -- l'ajouter. Le BP est lu à ce moment-là uniquement, puis reste en main.
+    local template, err, detail = import_into(st,
       blueprint.cursor_source(player) or player.cursor_stack)
     if not template then
-      player.print({ "tf-msg." .. err })
+      player.print({ "tf-msg." .. err, detail or "" })
       return
     end
     local locos, wagons = blueprint.counts(template)
     local has_sched = template.schedules and #template.schedules > 0
     local key = has_sched and "tf-msg.import-ok" or "tf-msg.import-ok-nosched"
     player.print({ key, template.name, locos, wagons })
-    -- Diagnostics temporaires.
-    if not has_sched then
-      player.print("[tf] source: " .. tostring(template.source_kind))
-    end
-    if template.parameters and #template.parameters > 0 then
-      player.print("[tf] params: " .. serpent.line(template.parameters))
-      local sc = template.schedules and template.schedules[1]
-      local rec = sc and ((sc.schedule and sc.schedule.records) or sc.records)
-      if rec and rec[1] then
-        player.print("[tf] station[1]: " .. tostring(rec[1].station))
-      end
-    end
-    gui.refresh(player, st)
-  elseif el.tags and el.tags.tf_action == "delete-template" then
-    table.remove(st.templates, el.tags.index)
-    gui.refresh(player, st)
-  elseif el.tags and el.tags.tf_action == "spawn-template" then
+    gui.refresh_templates(player, st)
+  elseif el.tags and el.tags.tf_action == "template-slot" then
     local t = st.templates[el.tags.index]
     if not t then return end
-    -- Blueprint paramétré : demander les valeurs avant de construire.
+    if event.button == defines.mouse_button_type.right then
+      -- Clic droit : supprimer le template.
+      table.remove(st.templates, el.tags.index)
+      gui.refresh_templates(player, st)
+      return
+    end
+    -- Clic gauche : mise en file (paramètres demandés si le BP en a).
     if t.parameters and #t.parameters > 0 then
       gui.open_params(player, st, el.tags.index, t)
       return
     end
-    local ok, err, detail = builder.try_spawn(st, t)
-    if ok then
-      player.print({ "tf-msg." .. ok, t.name })
-      -- Diagnostic temporaire : pourquoi le train est resté en manuel.
-      if ok == "spawn-ok-manual" and detail then
-        player.print("[tf] schedule: " .. detail)
+    enqueue(st, t, nil)
+    gui.refresh_queue(player, st)
+  elseif el.tags and el.tags.tf_action == "cancel-queued" then
+    table.remove(st.queue, el.tags.index)
+    gui.refresh_queue(player, st)
+  elseif el.tags and el.tags.tf_action == "cancel-work" then
+    if st.work then
+      if st.work.phase ~= "waiting" and st.work.need then
+        builder.refund(st, st.work.need)
       end
-    elseif detail then
-      player.print({ "tf-msg." .. err, detail })
-    else
-      player.print({ "tf-msg." .. err })
-    end
-  end
-end)
-
--- Rafraîchit la section Réserve des fenêtres ouvertes (1×/seconde) : on voit
--- les bras alimenter la fonderie en direct.
-script.on_nth_tick(60, function()
-  ensure_storage()
-  for _, player in pairs(game.connected_players) do
-    local un = gui.window_unit_number(player)
-    if un then
-      local st = storage.foundries[un]
-      if st and st.entity and st.entity.valid then
-        gui.refresh_stock(player, st)
-      else
-        gui.close(player)
-      end
+      st.work = nil
+      gui.refresh_dynamic(player, st)
     end
   end
 end)
@@ -318,6 +474,7 @@ end)
 -- Interface remote : utilisée par les tests automatisés (et utilisable par
 -- d'autres mods). Mêmes chemins de code que la GUI.
 -- ----------------------------------------------------------------------------
+
 remote.add_interface("train-foundry", {
   -- Importe `stack` (LuaItemStack blueprint) dans la fonderie unit_number.
   -- Retourne "ok:<nb véhicules>" ou la clé d'erreur.
@@ -329,8 +486,7 @@ remote.add_interface("train-foundry", {
     if not template then return err end
     return "ok:" .. #template.stock
   end,
-  -- Construit le train du template `index` de la fonderie. Retourne la clé
-  -- de message ("spawn-ok-departed", "spawn-missing", ...) + détail éventuel.
+  -- Construction immédiate (contourne la file) — tests/regression.
   spawn_template = function(unit_number, index)
     ensure_storage()
     local st = storage.foundries[unit_number]
@@ -339,6 +495,25 @@ remote.add_interface("train-foundry", {
     if not t then return "import-no-foundry" end
     local ok, err, detail = builder.try_spawn(st, t)
     return (ok or err) .. (detail and (" | " .. detail) or "")
+  end,
+  -- Met un template en file d'attente.
+  enqueue_template = function(unit_number, index)
+    ensure_storage()
+    local st = storage.foundries[unit_number]
+    if not st then return "import-no-foundry" end
+    local t = st.templates[index]
+    if not t then return "import-no-foundry" end
+    enqueue(st, t, nil)
+    return "ok:" .. #st.queue
+  end,
+  -- État de la production ("queue=N work=<phase> progress=P").
+  queue_state = function(unit_number)
+    ensure_storage()
+    local st = storage.foundries[unit_number]
+    if not st then return "import-no-foundry" end
+    local w = st.work
+    return string.format("queue=%d work=%s progress=%.2f",
+      #st.queue, w and w.phase or "-", w and w.progress or 0)
   end,
   -- Résumé des templates d'une fonderie ("Train 1(6), Train 2(3)").
   templates = function(unit_number)
@@ -353,9 +528,11 @@ remote.add_interface("train-foundry", {
   end,
 })
 
+-- ----------------------------------------------------------------------------
 -- Diagnostic : /tf-scan liste tous les rails et véhicules autour de la voie
--- de la fonderie survolée (positions, directions, orientations) — pour
--- comprendre les attelages de travers.
+-- de la fonderie survolée (positions, directions, orientations).
+-- ----------------------------------------------------------------------------
+
 commands.add_command("tf-scan", "Scanne la voie de la fonderie survolée", function(cmd)
   ensure_storage()
   local player = game.get_player(cmd.player_index)
@@ -404,28 +581,26 @@ commands.add_command("tf-debug", "État de la Train Foundry survolée", function
     player.print("[tf-debug] AUCUN state pour cette entité (bug !).")
     return
   end
-  local rails_ok, inputs_ok = 0, 0
+  local rails_ok = 0
   for _, r in ipairs(st.rails) do
     if r.valid then rails_ok = rails_ok + 1 end
   end
-  for _, c in ipairs(st.inputs) do
-    if c.valid then inputs_ok = inputs_ok + 1 end
-  end
-  local stock = "vide"
-  for _, c in ipairs(st.inputs) do
-    if c.valid then
-      local inv = c.get_inventory(defines.inventory.chest)
-      if inv then stock = tostring(inv.get_item_count()) .. " items" end
-      break
-    end
+  local stock = "MANQUANT"
+  if st.input and st.input.valid then
+    local inv = st.input.get_inventory(defines.inventory.chest)
+    stock = inv and (tostring(inv.get_item_count()) .. " items") or "?"
   end
   local signal = "MANQUANT"
   if st.signal and st.signal.valid then
     signal = "ok (signal_state=" .. tostring(st.signal.signal_state) .. ")"
   end
+  local w = st.work
   player.print(string.format(
-    "[tf-debug] rails=%d/%d raccord=%s inputs=%d/%d stock=%s signal=%s templates=%d",
+    "[tf-debug] rails=%d/%d raccord=%s coffre=%s combi=%s signal=%s "
+    .. "templates=%d queue=%d work=%s",
     rails_ok, #st.rails,
     composite.has_junction_rail(e) and "ok" or "MANQUANT",
-    inputs_ok, #st.inputs, stock, signal, #st.templates))
+    stock,
+    (st.combinator and st.combinator.valid) and "ok" or "MANQUANT",
+    signal, #st.templates, #st.queue, w and w.phase or "-"))
 end)
