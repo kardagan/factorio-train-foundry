@@ -9,3 +9,6 @@
 
 # Notes de développement internes (mémo Claude)
 /CLAUDE.md
+
+# Outils de dev locaux (non shippés, allowlist build.sh)
+/check-lua.sh

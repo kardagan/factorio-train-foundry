@@ -1,4 +1,23 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.3.0
+Date: 2026-07-18
+  Features:
+    - Dedicated blueprint chest (blue) on the west apron: drop your train blueprints there. The
+      book in the main window mirrors it; click a plan to queue it.
+    - Equipment grids on locomotives/wagons are now requested and consumed from the stock like
+      fuel and ammo (no longer created for free), and refunded on cancel.
+  Changes:
+    - The main window is now a regular window: Escape closes it. Clicking the blueprint chest
+      opens a floating management window (unaffected by the blueprint library shortcut).
+    - Reworked window: blueprint library with per-plan locomotive/wagon counts, rejected plans
+      flagged in red with the reason, available/required ratio on each component slot, and a
+      Clear queue button.
+  Bugfixes:
+    - Blueprints are validated before building: a plan is rejected up front if it is not a pure
+      train, is too long for the foundry, is not on a straight track, or has no locomotive facing
+      the exit (west) - instead of failing mid-build.
+    - The circuit "requests" mode no longer counts the components of a train already being built.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.0
 Date: 2026-07-17
   Info:

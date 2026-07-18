@@ -50,6 +50,7 @@ local RAIL       = "tf-rail"
 local INPUT      = "tf-input"
 local SIGNAL     = "tf-signal"
 local COMBINATOR = "tf-combinator"
+local BPCHEST    = "tf-blueprints"
 
 local GFX  = "__train-foundry__/graphics/"
 local ICON = GFX .. "foundry-icon.png"
@@ -198,6 +199,46 @@ input.circuit_wire_max_distance = 0
 -- le parvis) : sinon survoler le coffre sélectionne le bâtiment.
 input.selection_priority = 100
 
+-- Teinte récursivement les feuilles de sprite (toute table portant un
+-- `filename`) d'une structure quelconque : sprite simple, `layers`,
+-- `variations`... — indépendant du nom/forme des champs 2.0. L'ombre
+-- (draw_as_shadow) est ignorée pour rester réaliste ; seul le métal est
+-- coloré.
+local function tint_sprite(node, tint)
+  if type(node) ~= "table" then return end
+  if node.filename and not node.draw_as_shadow then
+    node.tint = tint
+    node.apply_runtime_tint = false
+  end
+  for _, sub in pairs(node) do
+    tint_sprite(sub, tint)
+  end
+end
+
+-- Coffre à BLUEPRINTS : un vrai coffre visible sur le parvis, filtré pour
+-- n'accepter que des blueprints. Le joueur y dépose ses plans de trains (à la
+-- main ou aux bras) ; le livre de la fenêtre lit ce coffre. Grâce à ça, la
+-- fenêtre principale n'a plus besoin de gérer l'import → elle redevient une
+-- fenêtre classique (player.opened) et Échap la ferme nativement.
+--
+-- Rendu BLEU (tint sur le sprite du coffre de fer) pour le distinguer d'un
+-- coup d'œil de la réserve grise et rappeler la couleur des blueprints.
+local bpchest = table.deepcopy(data.raw["container"]["iron-chest"])
+bpchest.name = BPCHEST
+bpchest.minable = nil
+bpchest.next_upgrade = nil
+bpchest.fast_replaceable_group = nil
+bpchest.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
+                  "no-copy-paste", "player-creation" }
+bpchest.inventory_size = 50
+bpchest.inventory_type = "with_filters_and_bar"
+bpchest.circuit_wire_max_distance = 0
+bpchest.selection_priority = 100
+
+-- Bleu blueprint (clair, légèrement cyan). Appliqué à la vue en jeu.
+local BP_TINT = { r = 0.35, g = 0.6, b = 1.0, a = 1.0 }
+if bpchest.picture then tint_sprite(bpchest.picture, BP_TINT) end
+
 -- Signal de sortie : contrôle le bloc aval et rend le segment interne
 -- unidirectionnel sortant. Visible en jeu (posé au bord du bâtiment),
 -- mais non sélectionnable/minable.
@@ -229,13 +270,12 @@ combinator.selection_priority = 100
 
 data:extend({
   { type = "recipe-category", name = "train-foundry-dummy" },
-  -- Layer de collision dédié au connecteur circuit caché (voir combinator).
 
-  main, rail, input, signal, combinator,
+  main, rail, input, signal, combinator, bpchest,
 
   -- Vue d'ensemble : bouton dans la barre de raccourcis + touche
-  -- personnalisable (défaut CTRL+ALT+F) ouvrant la liste de toutes les
-  -- fonderies, pour les piloter À DISTANCE sans se déplacer.
+  -- personnalisable (défaut CTRL+ALT+F) ouvrant la fonderie de la surface
+  -- courante, pour la piloter À DISTANCE sans se déplacer.
   {
     type = "custom-input",
     name = "tf-open-overview",

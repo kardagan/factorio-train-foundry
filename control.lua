@@ -44,6 +44,7 @@ local function migrate_all()
   -- ferme, le joueur les rouvrira.
   for _, player in pairs(game.players) do
     gui.close(player)
+    gui.close_bp(player)
   end
   for un, st in pairs(storage.foundries) do
     st.rails = st.rails or {}
@@ -61,10 +62,12 @@ local function migrate_all()
       -- Répare les signaux détachés (mauvaise direction dans les vieilles
       -- versions : ils clignotaient sans gouverner le bloc).
       composite.repair_signal(st)
-      -- Crée le coffre de réserve et le connecteur circuit sur les fonderies
-      -- d'avant leur refonte (anneau de quais / 4 coins → coffre + combi).
+      -- Crée les enfants manquants sur les fonderies d'avant leur ajout
+      -- (réserve, connecteur circuit, coffre à blueprints) : mise à jour EN
+      -- PLACE, sans que le joueur ait à miner puis reposer la fonderie.
       composite.ensure_input(st)
       composite.ensure_combinator(st)
+      composite.ensure_bpchest(st)
     end
   end
 
@@ -81,6 +84,7 @@ local function migrate_all()
   for _, st in pairs(storage.foundries) do
     for _, r in ipairs(st.rails or {}) do ref(r) end
     ref(st.input)
+    ref(st.bpchest)
     ref(st.signal)
     ref(st.combinator)
     -- Legacy : anneau de quais + 4 combinators d'anciennes versions.
@@ -89,7 +93,8 @@ local function migrate_all()
   end
   for _, surface in pairs(game.surfaces) do
     for _, ent in pairs(surface.find_entities_filtered({
-      name = { "tf-rail", "tf-input", "tf-signal", "tf-combinator" } })) do
+      name = { "tf-rail", "tf-input", "tf-signal", "tf-combinator",
+               "tf-blueprints" } })) do
       local key = ent.name .. ":" .. ent.position.x .. ":" .. ent.position.y
       if not referenced[key] then
         ent.destroy()
@@ -192,6 +197,85 @@ script.on_event(defines.events.on_entity_cloned, function(event)
 end)
 
 -- ----------------------------------------------------------------------------
+-- Coffre à blueprints : la BOÎTE D'ENTRÉE. On y dépose des blueprints, et la
+-- fonderie en dérive ses templates. La lecture se fait à la volée (aucun
+-- « import » manuel) : la validation d'un BP (train pur, longueur, voie
+-- droite) a lieu au moment où on le lit, donc AVANT tout lancement.
+-- ----------------------------------------------------------------------------
+
+-- Signature d'un slot : identifie un BP pour ne le re-parser que s'il a changé
+-- (perf + stabilité des paramètres déjà saisis). Label + nombre d'entités
+-- suffit à repérer un remplacement dans un slot donné.
+local function slot_signature(stack)
+  if not (stack and stack.valid_for_read and stack.is_blueprint
+          and stack.is_blueprint_setup()) then
+    return nil
+  end
+  local ents = stack.get_blueprint_entities()
+  return (stack.label or "") .. "#" .. (ents and #ents or 0)
+end
+
+-- Resynchronise state.templates depuis le contenu du coffre. Un template par
+-- slot occupé, dans l'ordre du coffre. Un BP non conforme est conservé comme
+-- template INVALIDE (affiché en rouge, non enfilable) — le joueur voit que son
+-- plan n'est pas bon sans qu'on le lui renvoie.
+local function sync_templates(state)
+  local chest = composite.bp_chest(state)
+  if not chest then return end
+  local inv = chest.get_inventory(defines.inventory.chest)
+  if not inv then return end
+
+  local old_by_sig = {}
+  for _, t in ipairs(state.templates) do
+    if t.signature then old_by_sig[t.signature] = t end
+  end
+
+  local templates = {}
+  for i = 1, #inv do
+    local stack = inv[i]
+    local sig = slot_signature(stack)
+    if sig then
+      local existing = old_by_sig[sig]
+      if existing then
+        templates[#templates + 1] = existing
+      else
+        local template, err, detail = blueprint.parse(stack)
+        if template then
+          template.name = (template.label and template.label ~= ""
+            and template.label) or ""
+          template.signature = sig
+          template.invalid = nil
+          templates[#templates + 1] = template
+        else
+          templates[#templates + 1] = {
+            name = (stack.label and stack.label ~= "" and stack.label) or "",
+            signature = sig,
+            invalid = err or "import-not-clean",
+            invalid_detail = detail,
+            icons = (function()
+              -- 2.0 : preview_icons (ex-blueprint_icons).
+              local ok, ic = pcall(function() return stack.preview_icons end)
+              return ok and ic or nil
+            end)(),
+            stock = {},
+          }
+        end
+      end
+    end
+  end
+  state.templates = templates
+
+  -- Empreinte du livre = signatures dans l'ordre. Sert à ne reconstruire la
+  -- section livre de la fenêtre QUE quand le coffre change réellement.
+  local fp = {}
+  for _, t in ipairs(templates) do fp[#fp + 1] = t.signature end
+  local new_fp = table.concat(fp, "|")
+  local changed = (new_fp ~= state.book_fingerprint)
+  state.book_fingerprint = new_fp
+  return changed
+end
+
+-- ----------------------------------------------------------------------------
 -- Boucle de production : file d'attente -> composants -> construction ->
 -- sortie. Une passe par fonderie toutes les TICK_INTERVAL ticks.
 -- ----------------------------------------------------------------------------
@@ -248,42 +332,47 @@ end
 
 script.on_nth_tick(TICK_INTERVAL, function()
   ensure_storage()
-  for _, st in pairs(storage.foundries) do
+  -- unit_number -> le livre a-t-il changé ce tick (coffre modifié) ?
+  local book_changed = {}
+  for un, st in pairs(storage.foundries) do
     if st.entity and st.entity.valid then
+      book_changed[un] = sync_templates(st)
       process_foundry(st)
       builder.update_circuit(st)
     end
   end
-  -- Rafraîchit les sections dynamiques des fenêtres ouvertes.
+  -- Rafraîchit les fenêtres ouvertes : sections dynamiques à chaque tick, et
+  -- le livre uniquement si le coffre de cette fonderie a changé.
   for _, player in pairs(game.connected_players) do
     local un = gui.window_unit_number(player)
     if un then
       local st = storage.foundries[un]
       if st and st.entity and st.entity.valid then
         gui.refresh_dynamic(player, st)
+        if book_changed[un] then
+          gui.refresh_templates(player, st)
+        end
       else
         gui.close(player)
+      end
+    end
+    -- Fenêtre coffre à blueprints (indépendante) : la resynchroniser si son
+    -- coffre a changé (dépôt/retrait aux bras pendant qu'elle est ouverte).
+    local bp_un = gui.bp_window_unit_number(player)
+    if bp_un then
+      local st = storage.foundries[bp_un]
+      if st and st.bpchest and st.bpchest.valid then
+        if book_changed[bp_un] then gui.refresh_bp(player, st) end
+      else
+        gui.close_bp(player)
       end
     end
   end
 end)
 
 -- ----------------------------------------------------------------------------
--- GUI : ouverture, imports, file d'attente.
+-- GUI : ouverture, file d'attente.
 -- ----------------------------------------------------------------------------
-
--- Lit le blueprint et l'enregistre comme template de la fonderie. Le BP est
--- lu à ce moment-là uniquement, et reste au joueur.
-local function import_into(state, stack)
-  local template, err, detail = blueprint.parse(stack)
-  if not template then return nil, err, detail end
-  -- Nom = label du blueprint ; VIDE si le plan n'a pas de titre (pas de
-  -- "Train N" par défaut — l'icône du plan suffit à l'identifier).
-  template.name = (template.label and template.label ~= "" and template.label)
-    or ""
-  state.templates[#state.templates + 1] = template
-  return template
-end
 
 -- Met un template en file (avec ses paramètres éventuels).
 local function enqueue(state, template, params)
@@ -294,6 +383,81 @@ local function enqueue(state, template, params)
   }
 end
 
+-- Clic sur un slot de la fenêtre coffre à blueprints :
+--  - un PLAN en main (item d'inventaire OU record de bibliothèque) → on le
+--    dépose dans le coffre (l'item est transféré ; un record est exporté puis
+--    réimporté dans un blueprint vierge du coffre) ;
+--  - sinon, si le slot est PLEIN et la main VIDE → on reprend le plan en main.
+local function handle_bp_slot(player, state, index)
+  local chest = state.bpchest
+  local inv = chest.get_inventory(defines.inventory.chest)
+  if not inv then return end
+
+  local cursor = player.cursor_stack
+  local record = player.cursor_record
+
+  -- 1) Dépôt d'un ITEM blueprint tenu en main.
+  if cursor and cursor.valid_for_read and cursor.is_blueprint then
+    if inv.can_insert(cursor) then
+      inv.insert(cursor)
+      cursor.clear()
+    else
+      player.create_local_flying_text({
+        text = { "tf-msg.bp-chest-full" }, position = chest.position })
+    end
+    return
+  end
+
+  -- 2) Dépôt d'un blueprint de la BIBLIOTHÈQUE (record : pas d'item, on crée un
+  --    blueprint vierge dans le coffre puis on y importe la chaîne exportée).
+  if record and record.valid and record.type == "blueprint" then
+    local n = inv.insert({ name = "blueprint" })
+    if n == 0 then
+      player.create_local_flying_text({
+        text = { "tf-msg.bp-chest-full" }, position = chest.position })
+      return
+    end
+    -- Retrouve le blueprint vierge qu'on vient d'insérer (dernier occupé).
+    local target
+    for i = #inv, 1, -1 do
+      local s = inv[i]
+      if s.valid_for_read and s.is_blueprint and not s.is_blueprint_setup() then
+        target = s
+        break
+      end
+    end
+    local ok = false
+    if target then
+      local okc, str = pcall(function() return record.export_record() end)
+      if okc and str then
+        ok = (target.import_stack(str) ~= 1)  -- 0 = ok, -1 = ok avec pertes
+      end
+    end
+    if not ok then
+      -- Import raté : on retire le blueprint vierge pour ne pas polluer.
+      if target and target.valid_for_read then target.clear() end
+      player.create_local_flying_text({
+        text = { "tf-msg.import-not-blueprint" }, position = chest.position })
+    end
+    return
+  end
+
+  -- 3) Main vide : on reprend le plan du slot cliqué (s'il est plein).
+  if not (cursor and cursor.valid_for_read) then
+    local stack = inv[index]
+    if stack and stack.valid_for_read then
+      if cursor and cursor.can_set_stack(stack) then
+        cursor.set_stack(stack)
+        stack.clear()
+      else
+        -- Repli : dans l'inventaire du joueur.
+        player.insert(stack)
+        stack.clear()
+      end
+    end
+  end
+end
+
 script.on_event(defines.events.on_gui_opened, function(event)
   if event.gui_type ~= defines.gui_type.entity then return end
   local e = event.entity
@@ -302,10 +466,24 @@ script.on_event(defines.events.on_gui_opened, function(event)
   local player = game.get_player(event.player_index)
   if not player then return end
 
-  -- Clic sur le bâtiment OU le combinateur → notre fenêtre. Le COFFRE, lui,
-  -- garde sa GUI vanilla (on peut y déposer à la main). Le combinateur ne
-  -- sert que de point d'accroche du câble (choix stock/request dans notre
-  -- fenêtre déportée), donc pas de GUI vanilla pour lui.
+  -- Aiguillage selon l'entité cliquée :
+  --  - bâtiment / combinateur → fenêtre principale (CLASSIQUE, player.opened,
+  --    Échap la ferme) ;
+  --  - coffre à blueprints → fenêtre FLOTTANTE dédiée (B ne la ferme pas, on
+  --    peut y déposer un plan) ; on neutralise sa GUI vanilla ;
+  --  - coffre de réserve → GUI vanilla conservée (dépôt de composants).
+  if e.name == "tf-blueprints" then
+    for _, s in pairs(storage.foundries) do
+      if s.bpchest == e then
+        gui.open_bp(player, s)
+        -- Ferme la GUI vanilla du coffre : la nôtre (flottante) la remplace.
+        player.opened = nil
+        break
+      end
+    end
+    return
+  end
+
   local st
   if e.name == MAIN then
     st = storage.foundries[e.unit_number]
@@ -315,9 +493,12 @@ script.on_event(defines.events.on_gui_opened, function(event)
     end
   end
   if not st then return end
+  -- Lit le coffre à blueprints avant d'afficher le livre (à jour dès
+  -- l'ouverture, sans attendre le prochain tick de la boucle).
+  sync_templates(st)
+  -- gui.open pose lui-même player.opened = frame (fenêtre classique) : NE PAS
+  -- remettre player.opened = nil ensuite, ça fermerait notre fenêtre.
   gui.open(player, st)
-  -- Ferme la GUI vanilla (assembleur / combinateur) ; la nôtre est flottante.
-  player.opened = nil
 end)
 
 -- Raccourci (barre du bas + touche) : ouvre directement l'UI de la fonderie
@@ -344,6 +525,16 @@ end)
 script.on_event("tf-open-overview", function(event)
   local player = game.get_player(event.player_index)
   if player then open_overview(player) end
+end)
+
+-- Fenêtre classique : Échap (ou clic ailleurs) déclenche on_gui_closed sur
+-- notre frame → on nettoie tout (fenêtre principale + déportées).
+script.on_event(defines.events.on_gui_closed, function(event)
+  local el = event.element
+  if el and el.valid and el.name == gui.WINDOW then
+    local player = game.get_player(event.player_index)
+    if player then gui.close(player) end
+  end
 end)
 
 -- Recale la fenêtre circuit déportée quand on déplace la principale.
@@ -383,6 +574,56 @@ script.on_event(defines.events.on_gui_click, function(event)
     return
   end
 
+  if el.name == "tf-bp-close" then
+    gui.close_bp(player)
+    return
+  end
+
+  -- « Vider la file » : retire toutes les entrées en attente (ne touche pas au
+  -- travail en cours).
+  if el.name == "tf-queue-clear" then
+    local un = gui.window_unit_number(player)
+    local st = un and storage.foundries[un]
+    if st and st.entity and st.entity.valid then
+      st.queue = {}
+      gui.refresh_queue(player, st)
+    end
+    return
+  end
+
+  -- « + » du livre : ferme la fenêtre principale et ouvre le coffre à plans.
+  if el.name == "tf-open-bpchest" then
+    local un = gui.window_unit_number(player)
+    local st = un and storage.foundries[un]
+    if st and st.bpchest and st.bpchest.valid then
+      gui.close(player)
+      gui.open_bp(player, st)
+    end
+    return
+  end
+
+  -- Slot de la fenêtre coffre à blueprints : dépose (plan en main) ou reprend
+  -- (slot plein). Clic GUI pur — aucun risque de « stamper » le blueprint sur
+  -- le monde, contrairement à un clic-monde.
+  if el.tags and el.tags.tf_action == "bp-slot" then
+    local un = gui.bp_window_unit_number(player)
+    ensure_storage()
+    local st = un and storage.foundries[un]
+    if not (st and st.bpchest and st.bpchest.valid) then
+      gui.close_bp(player)
+      return
+    end
+    handle_bp_slot(player, st, el.tags.index)
+    gui.refresh_bp(player, st)
+    sync_templates(st)
+    -- Rafraîchit le livre de la fenêtre principale UNIQUEMENT si elle est
+    -- ouverte sur cette même fonderie (sinon refresh_templates la fermerait).
+    if gui.window_unit_number(player) == un then
+      gui.refresh_templates(player, st)
+    end
+    return
+  end
+
   if el.name == "tf-circuit-toggle" then
     local un = gui.window_unit_number(player)
     local st = un and storage.foundries[un]
@@ -404,13 +645,22 @@ script.on_event(defines.events.on_gui_click, function(event)
   end
   if el.name == "tf-params-go" then
     ensure_storage()
-    local params, p_un, p_index = gui.collect_params(player)
+    local params, p_un, p_index, p_sig = gui.collect_params(player)
     local frame = player.gui.screen["tf-params"]
     if frame then frame.destroy() end
     if not params then return end
     local p_st = storage.foundries[p_un]
-    local t = p_st and p_st.templates[p_index]
-    if not t then return end
+    if not p_st then return end
+    -- Résolution par SIGNATURE d'abord (le livre a pu se réindexer depuis
+    -- l'ouverture du dialogue), repli sur l'index.
+    local t
+    if p_sig then
+      for _, cand in ipairs(p_st.templates) do
+        if cand.signature == p_sig then t = cand break end
+      end
+    end
+    t = t or p_st.templates[p_index]
+    if not t or t.invalid then return end
     enqueue(p_st, t, params)
     gui.refresh_queue(player, p_st)
     return
@@ -425,31 +675,12 @@ script.on_event(defines.events.on_gui_click, function(event)
     return
   end
 
-  if el.tags and el.tags.tf_action == "empty-slot" then
-    -- Case vide du livre : cliquer avec un blueprint en main (item de
-    -- l'inventaire OU blueprint de la bibliothèque — cursor_record) pour
-    -- l'ajouter. Le BP est lu à ce moment-là uniquement, puis reste en main.
-    local template, err, detail = import_into(st,
-      blueprint.cursor_source(player) or player.cursor_stack)
-    if not template then
-      player.print({ "tf-msg." .. err, detail or "" })
-      return
-    end
-    local locos, wagons = blueprint.counts(template)
-    local has_sched = template.schedules and #template.schedules > 0
-    local key = has_sched and "tf-msg.import-ok" or "tf-msg.import-ok-nosched"
-    player.print({ key, template.name, locos, wagons })
-    gui.refresh_templates(player, st)
-  elseif el.tags and el.tags.tf_action == "template-slot" then
+  if el.tags and el.tags.tf_action == "template-slot" then
+    -- Le livre reflète le coffre à blueprints ; on ne supprime pas d'ici (on
+    -- retire le BP du coffre). Clic = mise en file (paramètres demandés si le
+    -- BP en a). Un plan invalide n'a pas de tag d'action, on n'arrive pas ici.
     local t = st.templates[el.tags.index]
-    if not t then return end
-    if event.button == defines.mouse_button_type.right then
-      -- Clic droit : supprimer le template.
-      table.remove(st.templates, el.tags.index)
-      gui.refresh_templates(player, st)
-      return
-    end
-    -- Clic gauche : mise en file (paramètres demandés si le BP en a).
+    if not t or t.invalid then return end
     if t.parameters and #t.parameters > 0 then
       gui.open_params(player, st, el.tags.index, t)
       return
@@ -476,15 +707,22 @@ end)
 -- ----------------------------------------------------------------------------
 
 remote.add_interface("train-foundry", {
-  -- Importe `stack` (LuaItemStack blueprint) dans la fonderie unit_number.
-  -- Retourne "ok:<nb véhicules>" ou la clé d'erreur.
+  -- Dépose `stack` (LuaItemStack blueprint) dans le coffre à blueprints de la
+  -- fonderie et resynchronise les templates. Retourne "ok:<nb véhicules>",
+  -- "invalid:<clé>" si le plan est refusé, ou une clé d'erreur.
   import_blueprint = function(stack, unit_number)
     ensure_storage()
     local st = storage.foundries[unit_number]
     if not st then return "import-no-foundry" end
-    local template, err = import_into(st, stack)
-    if not template then return err end
-    return "ok:" .. #template.stock
+    local chest = composite.bp_chest(st)
+    if not chest then return "import-no-foundry" end
+    local inv = chest.get_inventory(defines.inventory.chest)
+    if not (inv and inv.insert(stack) > 0) then return "import-not-blueprint" end
+    sync_templates(st)
+    local last = st.templates[#st.templates]
+    if not last then return "import-not-blueprint" end
+    if last.invalid then return "invalid:" .. last.invalid end
+    return "ok:" .. #last.stock
   end,
   -- Construction immédiate (contourne la file) — tests/regression.
   spawn_template = function(unit_number, index)

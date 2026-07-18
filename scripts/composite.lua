@@ -19,13 +19,15 @@ local RAIL       = "tf-rail"
 local INPUT      = "tf-input"
 local SIGNAL     = "tf-signal"
 local COMBINATOR = "tf-combinator"
+local BPCHEST    = "tf-blueprints"
 
--- Réserve (coffre de fer visible) et connecteur circuit (combinator visible),
--- posés sur le PARVIS ouest, dans la zone libre hors collision (x < -18) :
--- de vraies entités que les bras et l'outil fil savent cibler. Un peu à
--- l'écart de la voie de sortie (rangée +5) pour rester accessibles.
+-- Réserve (coffre de fer), coffre à blueprints et connecteur circuit, posés
+-- sur le PARVIS ouest, dans la zone libre hors collision (x < -18) : de
+-- vraies entités que les bras et l'outil fil savent cibler. Un peu à l'écart
+-- de la voie de sortie (rangée +5) pour rester accessibles.
 local INPUT_OFFSET      = { -19.5, -1.5 }  -- coffre de fer (réserve)
 local COMBINATOR_OFFSET = { -19.5,  1.5 }  -- connecteur circuit
+local BPCHEST_OFFSET    = { -19.5, -3.5 }  -- coffre à blueprints
 
 -- Les rails du jeu vivent sur les coordonnées IMPAIRES, alors que le
 -- bâtiment (build_grid_size = 2) est snappé sur les PAIRES — vérifié
@@ -87,6 +89,7 @@ function composite.build(entity)
     entity = entity,
     rails = {},
     input = nil,       -- coffre de fer (réserve) sur le parvis
+    bpchest = nil,     -- coffre à blueprints sur le parvis
     signal = nil,
     combinator = nil,  -- connecteur circuit sur le parvis
     templates = {},  -- milestone 2 : templates de blueprints
@@ -118,6 +121,8 @@ function composite.build(entity)
   state.input = place(entity, INPUT, INPUT_OFFSET, defines.direction.north)
   state.combinator = place(entity, COMBINATOR, COMBINATOR_OFFSET,
     defines.direction.north)
+  state.bpchest = place(entity, BPCHEST, BPCHEST_OFFSET, defines.direction.north)
+  composite.set_bpchest_filters(state)
 
   return state
 end
@@ -126,6 +131,36 @@ end
 function composite.reserve(state)
   if state.input and state.input.valid then return state.input end
   return nil
+end
+
+-- Le coffre à blueprints (ou nil).
+function composite.bp_chest(state)
+  if state.bpchest and state.bpchest.valid then return state.bpchest end
+  return nil
+end
+
+-- Filtre le coffre à blueprints pour n'accepter que des blueprints (tous les
+-- slots filtrés sur l'item "blueprint").
+function composite.set_bpchest_filters(state)
+  local c = state.bpchest
+  if not (c and c.valid) then return end
+  local inv = c.get_inventory(defines.inventory.chest)
+  if not inv or not inv.supports_filters() then return end
+  for i = 1, #inv do
+    pcall(function() inv.set_filter(i, "blueprint") end)
+  end
+end
+
+-- Coffre à blueprints : (re)crée-le pour les fonderies d'avant cette version.
+function composite.ensure_bpchest(state)
+  if state.bpchest and state.bpchest.valid then return end
+  local e = state.entity
+  if not (e and e.valid) then return end
+  local pos = { e.position.x + BPCHEST_OFFSET[1], e.position.y + BPCHEST_OFFSET[2] }
+  state.bpchest = e.surface.find_entities_filtered({
+    name = BPCHEST, position = pos, radius = 1 })[1]
+    or place(e, BPCHEST, BPCHEST_OFFSET, defines.direction.north)
+  composite.set_bpchest_filters(state)
 end
 
 -- Répare le signal de sortie d'un state existant : un signal absent, invalide
@@ -165,30 +200,36 @@ function composite.ensure_input(state)
     or place(e, INPUT, INPUT_OFFSET, defines.direction.north)
 end
 
--- Détruit proprement toutes les entités enfants. Le contenu du coffre de
--- réserve est déversé au sol pour ne rien perdre.
+-- Déverse le contenu d'un coffre au sol (pour ne rien perdre à la dépose).
+local function spill_chest(chest)
+  if not (chest and chest.valid) then return end
+  local inv = chest.get_inventory(defines.inventory.chest)
+  if not inv or inv.is_empty() then return end
+  for i = 1, #inv do
+    local stack = inv[i]
+    if stack.valid_for_read then
+      chest.surface.spill_item_stack({
+        position = chest.position,
+        stack = stack,
+        enable_looted = true,
+        force = chest.force,
+      })
+    end
+  end
+end
+
+-- Détruit proprement toutes les entités enfants. Le contenu des coffres
+-- (réserve + blueprints) est déversé au sol pour ne rien perdre.
 function composite.destroy(state)
   if not state then return end
 
-  local chest = composite.reserve(state)
-  if chest then
-    local inv = chest.get_inventory(defines.inventory.chest)
-    if inv and not inv.is_empty() then
-      for i = 1, #inv do
-        local stack = inv[i]
-        if stack.valid_for_read then
-          chest.surface.spill_item_stack({
-            position = chest.position,
-            stack = stack,
-            enable_looted = true,
-            force = chest.force,
-          })
-        end
-      end
-    end
-  end
+  spill_chest(composite.reserve(state))
+  spill_chest(composite.bp_chest(state))
   if state.input and state.input.valid then
     state.input.destroy()
+  end
+  if state.bpchest and state.bpchest.valid then
+    state.bpchest.destroy()
   end
   -- Champs legacy des vieilles saves (anneau de quais, ancien coffre).
   for _, c in ipairs(state.inputs or {}) do

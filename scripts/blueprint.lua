@@ -9,6 +9,8 @@
 -- retrouvera tout ce que le BP contient (orientation, couleur, fuel en item
 -- requests, filtres...) sans qu'on ait à tout re-modéliser ici.
 
+local builder = require("scripts.builder")
+
 local blueprint = {}
 
 local ROLLING_TYPES = {
@@ -122,6 +124,11 @@ function blueprint.parse(source)
     for tag in pairs(intruders) do names[#names + 1] = tag end
     return nil, "import-not-clean", table.concat(names, " ")
   end
+  -- Refuse dès l'import un train trop long pour la voie interne (plutôt que
+  -- de le lancer et voir les véhicules retomber dans le coffre).
+  if #stock > builder.MAX_STOCK then
+    return nil, "import-too-long", tostring(builder.MAX_STOCK)
+  end
 
   -- Le train du blueprint doit être posé sur une voie DROITE : on détecte
   -- l'axe dominant, on exige la colinéarité et l'espacement standard des
@@ -154,6 +161,32 @@ function blueprint.parse(source)
     if math.abs(d - 7) > 0.6 then
       return nil, "import-not-straight"
     end
+  end
+
+  -- La sortie de la fonderie est à l'OUEST : il faut au moins une LOCOMOTIVE
+  -- capable de tirer le train vers l'ouest, sinon il ne peut pas sortir. On
+  -- reproduit le mapping orientation -> direction du builder (BP horizontal :
+  -- orientation ≈ 0.25 = est, sinon ouest ; BP vertical : ≈ 0.5 = est, sinon
+  -- ouest) et on exige au moins une loco orientée ouest.
+  local has_west_loco = false
+  for _, e in ipairs(stock) do
+    local proto = prototypes.entity[e.name]
+    if proto and proto.type == "locomotive" then
+      local o = e.orientation or (horizontal and 0.75 or 0)
+      local faces_west
+      if horizontal then
+        faces_west = not (math.abs(o - 0.25) < 0.26)
+      else
+        faces_west = not (math.abs(o - 0.5) < 0.26)
+      end
+      if faces_west then
+        has_west_loco = true
+        break
+      end
+    end
+  end
+  if not has_west_loco then
+    return nil, "import-no-west-loco"
   end
 
   local template = {

@@ -1,26 +1,32 @@
 -- Train Foundry — GUI de la fonderie.
 --
--- Disposition (maquette M3) : colonne gauche = bibliothèque de templates
--- (slot d'import + liste) ; colonne droite = file d'attente (nom + icônes
--- des paramètres), travail en cours (composants manquants ou barre de
+-- Disposition : colonne gauche = livre de plans (reflet en direct du coffre à
+-- blueprints, clic = mise en file) ; colonne droite = file d'attente (nom +
+-- icônes des paramètres), travail en cours (composants manquants ou barre de
 -- progression), et réserve.
 --
--- Fenêtre FLOTTANTE : volontairement PAS enregistrée comme player.opened,
--- sinon ouvrir la bibliothèque de blueprints (B) la fermerait. Échap ne la
--- ferme pas, la croix oui. Les sections dynamiques (file, en cours,
--- réserve) sont rafraîchies par la boucle de production.
+-- Fenêtre CLASSIQUE (player.opened) : Échap et clic ailleurs la ferment
+-- nativement. Le conflit historique avec la bibliothèque de blueprints (B) a
+-- disparu : on ne prend plus de plan EN MAIN, on les dépose dans le coffre à
+-- blueprints. Les sections dynamiques (livre, file, en cours, réserve) sont
+-- rafraîchies par la boucle de production.
 
 local blueprint = require("scripts.blueprint")
 
 local gui = {}
 
 local WINDOW = "tf-window"
+-- Fenêtre FLOTTANTE de gestion du coffre à blueprints (ouverte au clic sur le
+-- coffre). Flottante = B (bibliothèque) ne la ferme pas → on peut prendre un
+-- plan en main et le déposer. Fermeture par la croix.
+local BP_WINDOW = "tf-bp-window"
 
 local RICH_SPRITE = {
   item = "item", fluid = "fluid", virtual = "virtual-signal",
   ["virtual-signal"] = "virtual-signal", recipe = "recipe",
   entity = "entity", quality = "quality",
   ["space-location"] = "space-location",
+  ["asteroid-chunk"] = "asteroid-chunk",
 }
 
 -- Chemin de sprite VALIDÉ pour un signal {type, name} — nil si inconnu
@@ -120,9 +126,52 @@ local function bp_wide_tile(parent, sigs, args)
   return box
 end
 
--- Livre de plans : grille de cases façon UI vanilla. Case pleine = icône et
--- nom du blueprint (clic gauche : file, clic droit : supprimer) ; case vide
--- = cliquer avec un plan en main pour l'ajouter.
+-- Tuile CARRÉE compacte pour la grille du coffre : un slot cliquable (fond
+-- bleu blueprint) et, superposées, jusqu'à 4 icônes du plan (2×2).
+-- args = { tooltip, tags } ; sigs = liste de chemins de sprites (0 à 4).
+-- Les enfants d'un sprite-button IGNORENT les marges (ancrés au coin) : on
+-- superpose donc la grille dans un FLOW parent, via marges négatives — même
+-- technique que bp_wide_tile, qui respecte bien le padding.
+local SQ = 64          -- taille du slot
+local SQ_ICON = 20     -- taille d'une mini-icône
+local SQ_PAD = 8       -- retrait des icônes par rapport au bord du slot
+local function bp_square_tile(parent, sigs, args)
+  local box = parent.add({ type = "flow", direction = "vertical" })
+  box.style.width = SQ
+  box.style.height = SQ
+
+  local button = box.add({
+    type = "sprite-button",
+    style = "slot_button",
+    sprite = "item/blueprint",
+    tooltip = args and args.tooltip or nil,
+    tags = args and args.tags or nil,
+  })
+  button.style.size = { SQ, SQ }
+
+  if #sigs > 0 then
+    -- Grille 2×2 posée PAR-DESSUS le bouton (top_margin négatif = remonte sur
+    -- le bouton), avec un retrait SQ_PAD depuis le coin haut-gauche.
+    local grid = box.add({ type = "table", column_count = 2 })
+    grid.ignored_by_interaction = true
+    grid.style.horizontal_spacing = 2
+    grid.style.vertical_spacing = 2
+    grid.style.top_margin = SQ_PAD - SQ
+    grid.style.left_margin = SQ_PAD
+    for k = 1, math.min(4, #sigs) do
+      local ic = grid.add({ type = "sprite", sprite = sigs[k] })
+      ic.style.size = SQ_ICON
+      ic.style.stretch_image_to_widget_size = true
+    end
+  end
+  return box
+end
+
+-- Livre de plans : reflet EN DIRECT du coffre à blueprints. Une ligne par
+-- plan déposé — icône + nom (clic gauche : mise en file). Un plan non conforme
+-- (autre qu'un train, trop long, pas sur voie droite) apparaît en rouge, non
+-- cliquable, avec la raison en infobulle. La suppression se fait en retirant
+-- le BP du coffre, pas ici.
 function gui.refresh_templates(player, state)
   local body = body_of(player)
   local list = body and body["tf-left"]["tf-templates-scroll"]["tf-templates"]
@@ -132,15 +181,37 @@ function gui.refresh_templates(player, state)
   end
   list.clear()
 
-  -- Vue LISTE : une ligne par plan. À gauche, jusqu'à 4 slots blueprint
-  -- côte à côte (chacun = fond bleu + une icône du plan à taille standard) ;
-  -- à droite, le titre. Plus une ligne "ajouter" en fin.
+  -- Ligne d'accès rapide au coffre à plans : le « + » ferme la fenêtre
+  -- principale et ouvre la fenêtre du coffre (dépôt/retrait des blueprints).
+  local add_row = list.add({ type = "flow", direction = "horizontal" })
+  add_row.style.vertical_align = "center"
+  add_row.style.bottom_margin = 8
+  local add = add_row.add({
+    type = "sprite-button",
+    name = "tf-open-bpchest",
+    style = "slot_button",
+    sprite = "utility/add",
+    tooltip = { "tf-gui.open-bpchest" },
+  })
+  add.style.size = 40
+  local add_lbl = add_row.add({
+    type = "label",
+    caption = { "tf-gui.open-bpchest" },
+  })
+  add_lbl.style.left_margin = 8
+
+  if #state.templates == 0 then
+    local hint = list.add({
+      type = "label",
+      caption = { "tf-gui.book-empty" },
+    })
+    hint.style.single_line = false
+    hint.style.maximal_width = 340
+    return
+  end
+
   for i, t in ipairs(state.templates) do
-    local locos, wagons = blueprint.counts(t)
     local title = (t.name ~= "") and t.name or { "tf-gui.untitled" }
-    local tip = { "", title, "\n", locos, " × [item=locomotive]  ",
-                  wagons, " × [item=cargo-wagon]", "\n",
-                  { "tf-gui.slot-filled" } }
     local row = list.add({ type = "flow", direction = "horizontal" })
     row.style.vertical_align = "center"
     row.style.bottom_margin = 6  -- espace entre les lignes de la liste
@@ -153,31 +224,77 @@ function gui.refresh_templates(player, state)
         if p then sigs[#sigs + 1] = p end
       end
     end
+
+    local tip
+    if t.invalid then
+      tip = { "", title, "\n[color=255,80,80]",
+              { "tf-msg." .. t.invalid, t.invalid_detail or "" },
+              "[/color]" }
+    else
+      local locos, wagons = blueprint.counts(t)
+      tip = { "", title, "\n", locos, " × [item=locomotive]  ",
+              wagons, " × [item=cargo-wagon]", "\n",
+              { "tf-gui.slot-filled-queue" } }
+    end
+
     bp_wide_tile(row, sigs, {
       tooltip = tip,
-      tags = { tf_action = "template-slot", index = i },
+      -- Un plan invalide n'est PAS enfilable : pas de tag d'action.
+      tags = (not t.invalid)
+        and { tf_action = "template-slot", index = i } or nil,
     })
 
-    local label = row.add({ type = "label", caption = t.name })
-    label.style.left_margin = 8
-    label.style.horizontally_stretchable = true
-  end
+    -- Colonne de droite : nom (+ ⚠ si rejeté) puis, en dessous, les compteurs
+    -- loco/wagon (plan valide) ou la raison du rejet (plan invalide).
+    local info = row.add({ type = "flow", direction = "vertical" })
+    info.style.left_margin = 8
+    info.style.horizontally_stretchable = true
+    info.style.vertical_align = "center"
 
-  -- Ligne d'ajout : case vide pour déposer un plan.
-  local add_row = list.add({ type = "flow", direction = "horizontal" })
-  add_row.style.vertical_align = "center"
-  local add = add_row.add({
-    type = "sprite-button",
-    style = "slot_button",
-    sprite = "utility/add",
-    tooltip = { "tf-gui.slot-empty" },
-    tags = { tf_action = "empty-slot" },
-  })
-  add.style.size = 56
-  local hint = add_row.add({ type = "label", caption = { "tf-gui.slot-empty" } })
-  hint.style.left_margin = 8
-  hint.style.single_line = false
-  hint.style.maximal_width = 200
+    local head = info.add({ type = "flow", direction = "horizontal" })
+    head.style.vertical_align = "center"
+    if t.invalid then
+      -- Triangle d'alerte : on choisit le 1er sprite utility valide (les noms
+      -- varient selon versions ; un chemin invalide dans add{} plante).
+      local warn_sprite
+      for _, p in ipairs({ "utility/warning_icon", "utility/danger_icon",
+                           "utility/achievement_warning" }) do
+        if helpers.is_valid_sprite_path(p) then warn_sprite = p break end
+      end
+      if warn_sprite then
+        local warn = head.add({ type = "sprite", sprite = warn_sprite })
+        warn.style.size = 20
+        warn.style.right_margin = 4
+      end
+    end
+    local name = head.add({
+      type = "label",
+      caption = t.invalid and { "tf-gui.book-invalid" } or title,
+    })
+    name.style.font = "default-semibold"
+    if t.invalid then name.style.font_color = { 1, 0.4, 0.4 } end
+
+    if t.invalid then
+      local why = info.add({
+        type = "label",
+        caption = { "tf-msg." .. t.invalid, t.invalid_detail or "" },
+      })
+      why.style.font_color = { 1, 0.4, 0.4 }
+      why.style.single_line = false
+      why.style.maximal_width = 200
+    else
+      local locos, wagons = blueprint.counts(t)
+      local counts = info.add({ type = "flow", direction = "horizontal" })
+      counts.style.vertical_align = "center"
+      counts.style.top_margin = 2
+      local lc = counts.add({
+        type = "label",
+        caption = { "", "[item=locomotive] ", locos, "    ",
+                    "[item=cargo-wagon] ", wagons },
+      })
+      lc.style.font_color = { 0.8, 0.8, 0.8 }
+    end
+  end
 end
 
 function gui.refresh_queue(player, state)
@@ -267,19 +384,31 @@ function gui.refresh_work(player, state)
   pct.style.minimal_width = 36
   pct.style.left_margin = 6
 
-  -- 3) Composants : VERT si la réserve a la quantité, ROUGE s'il en manque
-  -- (le nombre affiché = le manque ; sinon la quantité requise).
+  -- 3) Composants : un slot par ingrédient, VERT si la réserve couvre le
+  -- besoin, ROUGE sinon. Sous chaque slot, le ratio disponible/requis (façon
+  -- maquette) : « 4/4 » vert avec ✓, « 1/4 » rouge s'il en manque.
   local comps = flow.add({ type = "flow", direction = "horizontal" })
+  comps.style.horizontal_spacing = 4
   for item, n in pairs(work.need or {}) do
     local miss = work.phase == "waiting" and work.missing
       and work.missing[item] or 0
-    comps.add({
+    local have = math.max(0, n - miss)
+    local col = comps.add({ type = "flow", direction = "vertical" })
+    col.style.vertical_align = "center"
+    col.style.horizontal_align = "center"
+    col.add({
       type = "sprite-button",
       style = (miss > 0) and "tf_slot_missing" or "tf_slot_ok",
       sprite = "item/" .. item,
-      number = (miss > 0) and miss or n,
       ignored_by_interaction = true,
     })
+    local ratio = col.add({
+      type = "label",
+      caption = have .. "/" .. n,
+    })
+    ratio.style.font = "default-small-semibold"
+    ratio.style.font_color = (miss > 0) and { 1, 0.4, 0.4 } or { 0.5, 1, 0.5 }
+    ratio.style.top_margin = 1
   end
 
   -- État sous les composants : uniquement l'attente de voie (le manque de
@@ -330,7 +459,10 @@ function gui.refresh_stock(player, state)
   end
 end
 
--- Sections rafraîchies en continu par la boucle de production.
+-- Sections rafraîchies en continu par la boucle de production (file, en cours,
+-- réserve). Le LIVRE n'en fait PAS partie : il reflète le coffre à blueprints
+-- mais on ne le reconstruit que quand son contenu change réellement (sinon le
+-- survol/les infobulles clignoteraient à chaque demi-seconde).
 function gui.refresh_dynamic(player, state)
   gui.refresh_queue(player, state)
   gui.refresh_work(player, state)
@@ -401,6 +533,14 @@ function gui.open(player, state)
     caption = { "tf-gui.templates-title" },
     style = "caption_label",
   })
+  local subtitle = left.add({
+    type = "label",
+    caption = { "tf-gui.templates-hint" },
+  })
+  subtitle.style.single_line = false
+  subtitle.style.maximal_width = 340
+  subtitle.style.font_color = { 0.7, 0.7, 0.7 }
+  subtitle.style.bottom_margin = 4
   -- Hauteur FIXE : la fenêtre ne grandit pas avec le nombre de plans.
   local tscroll = left.add({
     type = "scroll-pane", name = "tf-templates-scroll",
@@ -422,10 +562,20 @@ function gui.open(player, state)
     style = "inside_shallow_frame_with_padding",
     direction = "vertical",
   })
-  qframe.add({
+  local qhead = qframe.add({ type = "flow", direction = "horizontal" })
+  qhead.style.vertical_align = "center"
+  local qtitle = qhead.add({
     type = "label",
     caption = { "tf-gui.queue-title" },
     style = "caption_label",
+  })
+  qtitle.style.horizontally_stretchable = true
+  qhead.add({
+    type = "sprite-button",
+    name = "tf-queue-clear",
+    style = "tool_button_red",
+    sprite = "utility/trash",
+    tooltip = { "tf-gui.queue-clear" },
   })
   local qscroll = qframe.add({
     type = "scroll-pane", name = "tf-queue-scroll",
@@ -449,7 +599,7 @@ function gui.open(player, state)
   local wflow = wframe.add({
     type = "flow", name = "tf-work", direction = "vertical",
   })
-  wflow.style.height = 110
+  wflow.style.height = 130
 
   local sframe = right.add({
     type = "frame",
@@ -474,9 +624,11 @@ function gui.open(player, state)
   sscroll.add({ type = "flow", name = "tf-stock", direction = "vertical" })
 
   frame.auto_center = true
-  -- Fenêtre FLOTTANTE : pas player.opened (sinon ouvrir la bibliothèque de
-  -- BP avec B la fermerait). Fermeture par la croix. Remplissage de la
-  -- réserve aux bras uniquement.
+  -- Fenêtre CLASSIQUE : player.opened → Échap et clic ailleurs la ferment
+  -- nativement (on_gui_closed). Plus de conflit avec la bibliothèque de BP :
+  -- on ne prend plus de plan EN MAIN, on les dépose dans le coffre à
+  -- blueprints. La réserve, elle, se remplit aux bras.
+  player.opened = frame
   gui.refresh(player, state)
 end
 
@@ -578,7 +730,14 @@ function gui.open_params(player, state, index, template)
     name = "tf-params",
     direction = "vertical",
     caption = { "tf-gui.params-title" },
-    tags = { unit_number = state.entity.unit_number, index = index },
+    -- On garde la SIGNATURE du plan (pas seulement l'index) : le livre reflète
+    -- le coffre et peut se réindexer entre l'ouverture du dialogue et la
+    -- validation. La signature identifie le bon template quoi qu'il arrive.
+    tags = {
+      unit_number = state.entity.unit_number,
+      index = index,
+      signature = template.signature,
+    },
   })
   local rows = frame.add({
     type = "flow", name = "tf-params-rows", direction = "vertical",
@@ -627,9 +786,134 @@ function gui.collect_params(player)
       end
     end
   end
-  return params, frame.tags.unit_number, frame.tags.index
+  return params, frame.tags.unit_number, frame.tags.index,
+    frame.tags.signature
+end
+
+-- ---------------------------------------------------------------------------
+-- Fenêtre FLOTTANTE de gestion du coffre à blueprints
+-- ---------------------------------------------------------------------------
+
+-- L'unit_number de la fonderie liée à la fenêtre BP ouverte (ou nil).
+function gui.bp_window_unit_number(player)
+  local w = player.gui.screen[BP_WINDOW]
+  if not w then return nil end
+  return w.tags.unit_number
+end
+
+function gui.close_bp(player)
+  local w = player.gui.screen[BP_WINDOW]
+  if w then w.destroy() end
+end
+
+-- Chemins de sprites des icônes d'un blueprint (1 à 4), pour poser dessus la
+-- tuile bleue. Vide si le plan n'a pas d'icône exploitable.
+local function bp_stack_sigs(stack)
+  local sigs = {}
+  -- 2.0 : la propriété s'appelle preview_icons (ex-blueprint_icons en 1.1).
+  local ok, icons = pcall(function() return stack.preview_icons end)
+  if ok and icons then
+    for k = 1, math.min(4, #icons) do
+      local p = icons[k].signal and sprite_of(icons[k].signal)
+      if p then sigs[#sigs + 1] = p end
+    end
+  end
+  return sigs
+end
+
+-- (Re)remplit la grille de slots depuis l'inventaire du coffre. Slot occupé =
+-- tuile bleue + icônes du plan (clic = le reprendre en main) ; slot vide =
+-- case cliquable (clic avec un plan en main = le déposer).
+function gui.refresh_bp(player, state)
+  local w = player.gui.screen[BP_WINDOW]
+  local grid = w and w.valid and w["tf-bp-inner"]
+    and w["tf-bp-inner"]["tf-bp-scroll"]
+    and w["tf-bp-inner"]["tf-bp-scroll"]["tf-bp-grid"]
+  if not grid then return end
+  grid.clear()
+
+  local chest = (state.bpchest and state.bpchest.valid) and state.bpchest
+  local inv = chest and chest.get_inventory(defines.inventory.chest)
+  if not inv then return end
+
+  for i = 1, #inv do
+    local stack = inv[i]
+    if stack.valid_for_read then
+      local tip = (stack.label and stack.label ~= "" and stack.label)
+        or { "tf-gui.bp-slot-filled" }
+      bp_square_tile(grid, bp_stack_sigs(stack), {
+        tooltip = tip,
+        tags = { tf_action = "bp-slot", index = i },
+      })
+    else
+      local empty = grid.add({
+        type = "sprite-button",
+        style = "slot_button",
+        tooltip = { "tf-gui.bp-slot-empty" },
+        tags = { tf_action = "bp-slot", index = i },
+      })
+      empty.style.size = { SQ, SQ }
+    end
+  end
+end
+
+function gui.open_bp(player, state)
+  gui.close_bp(player)
+
+  local frame = player.gui.screen.add({
+    type = "frame",
+    name = BP_WINDOW,
+    direction = "vertical",
+    tags = { unit_number = state.entity.unit_number },
+  })
+
+  local titlebar = frame.add({ type = "flow", direction = "horizontal" })
+  titlebar.add({
+    type = "label",
+    caption = { "tf-gui.bp-title" },
+    style = "frame_title",
+    ignored_by_interaction = true,
+  })
+  local drag = titlebar.add({ type = "empty-widget",
+    style = "draggable_space_header" })
+  drag.style.horizontally_stretchable = true
+  drag.style.height = 24
+  drag.drag_target = frame
+  titlebar.add({
+    type = "sprite-button",
+    name = "tf-bp-close",
+    style = "frame_action_button",
+    sprite = "utility/close",
+  })
+
+  local inner = frame.add({
+    type = "frame",
+    name = "tf-bp-inner",
+    style = "inside_shallow_frame_with_padding",
+    direction = "vertical",
+  })
+  inner.add({
+    type = "label",
+    caption = { "tf-gui.bp-hint" },
+    style = "caption_label",
+  })
+  local scroll = inner.add({
+    type = "scroll-pane", name = "tf-bp-scroll",
+    horizontal_scroll_policy = "never",
+  })
+  scroll.style.height = 300
+  scroll.style.width = 440
+  local grid = scroll.add({
+    type = "table", name = "tf-bp-grid", column_count = 6,
+  })
+  grid.style.horizontal_spacing = 4
+  grid.style.vertical_spacing = 4
+
+  frame.auto_center = true
+  gui.refresh_bp(player, state)
 end
 
 gui.WINDOW = WINDOW
+gui.BP_WINDOW = BP_WINDOW
 
 return gui

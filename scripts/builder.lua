@@ -21,7 +21,10 @@ local STOCK_TYPES = { "locomotive", "cargo-wagon", "fluid-wagon",
 local RAIL_Y = 5
 local HEAD_X = -12
 local SPACING = 7
-local MAX_STOCK = 5
+-- Longueur max d'un train (nombre de véhicules) que la voie interne peut
+-- accueillir. Exposé pour la validation à l'import (blueprint.lua).
+builder.MAX_STOCK = 5
+local MAX_STOCK = builder.MAX_STOCK
 
 -- Durée de construction : 4 s par véhicule.
 builder.TICKS_PER_VEHICLE = 240
@@ -31,6 +34,28 @@ local function shared_inventory(state)
   local chest = state.input
   if chest and chest.valid then
     return chest.get_inventory(defines.inventory.chest)
+  end
+end
+
+-- Recopie la grille d'équipement du blueprint dans le véhicule construit
+-- (mods type Vehicle Equipment Grids). grid_data = array de
+-- {equipment=<{name,quality} ou string>, position={x,y}} tel que renvoyé par
+-- get_blueprint_entities(). Défensif : rien si le véhicule n'a pas de grille,
+-- on saute les équipements absents de la partie (mod retiré), et chaque pose
+-- est protégée (quality inconnue = erreur possible).
+local function apply_grid(entity, grid_data)
+  if not grid_data then return end
+  local grid = entity.grid
+  if not grid then return end
+  for _, comp in pairs(grid_data) do
+    local eq = comp.equipment
+    local name = (type(eq) == "table") and eq.name or eq
+    local quality = (type(eq) == "table") and eq.quality or nil
+    if name and prototypes.equipment[name] then
+      pcall(function()
+        grid.put({ name = name, quality = quality, position = comp.position })
+      end)
+    end
   end
 end
 
@@ -63,6 +88,41 @@ local function requested_items(s)
   return out
 end
 
+-- Cache équipement -> item qui le pose. Un équipement est placé par l'item
+-- dont le prototype a placed_as_equipment_result = <cet équipement>. À défaut
+-- (mapping introuvable), on retombe sur un item de même nom si présent.
+local equipment_item_cache = nil
+local function build_equipment_item_map()
+  local map = {}
+  for item_name, proto in pairs(prototypes.item) do
+    local eq = proto.place_as_equipment_result
+    if eq then map[eq.name] = item_name end
+  end
+  return map
+end
+local function item_for_equipment(eq_name)
+  equipment_item_cache = equipment_item_cache or build_equipment_item_map()
+  if equipment_item_cache[eq_name] then return equipment_item_cache[eq_name] end
+  if prototypes.item[eq_name] then return eq_name end
+  return nil
+end
+
+-- Équipements présents dans la grille d'un véhicule du blueprint : map item de
+-- l'équipement -> quantité. Ce qui alimente la réserve exactement comme le
+-- carburant (compté, consommé, remboursé) — plus de génération « par magie ».
+local function grid_items(s)
+  local out = {}
+  for _, comp in pairs(s.grid or {}) do
+    local eq = comp.equipment
+    local eq_name = (type(eq) == "table") and eq.name or eq
+    if eq_name then
+      local item = item_for_equipment(eq_name)
+      if item then out[item] = (out[item] or 0) + 1 end
+    end
+  end
+  return out
+end
+
 -- Items requis par le template : les véhicules eux-mêmes + tout ce que le
 -- blueprint demande dedans (carburant si le train a été blueprinté avec le
 -- plein, munitions...).
@@ -72,6 +132,10 @@ function builder.compute_need(template)
     local item = place_item_for(s.name)
     need[item] = (need[item] or 0) + 1
     for name, n in pairs(requested_items(s)) do
+      need[name] = (need[name] or 0) + n
+    end
+    -- Équipements de la grille : demandés/consommés comme le carburant.
+    for name, n in pairs(grid_items(s)) do
       need[name] = (need[name] or 0) + n
     end
   end
@@ -206,6 +270,9 @@ function builder.spawn(state, template, params)
       return nil, "spawn-failed"
     end
     if s.color then v.color = s.color end
+    -- Grille d'équipement du BP (mods type Vehicle Equipment Grids) : on la
+    -- recopie dans la grille du véhicule si le prototype en a une.
+    apply_grid(v, s.grid)
     spawned[#spawned + 1] = v
   end
 
@@ -343,13 +410,14 @@ function builder.update_circuit(state)
     end
   end
   if mode == "request" then
-    -- Composants manquants du travail en cours + de toute la file.
-    local pending = {}
-    if state.work and state.work.need then
+    -- Composants manquants du travail EN ATTENTE uniquement. Un travail déjà
+    -- en construction (phase building/ready) a déjà consommé ses composants
+    -- dans la réserve → ne PAS les redemander (sinon on réclame le contenu
+    -- d'un train déjà en cours).
+    if state.work and state.work.phase == "waiting" and state.work.need then
       local miss = builder.missing(state, state.work.need)
-      for item, n in pairs(miss) do pending[item] = (pending[item] or 0) + n end
+      for item, n in pairs(miss) do acc[item] = (acc[item] or 0) + n end
     end
-    for item, n in pairs(pending) do acc[item] = (acc[item] or 0) + n end
   end
 
   local filters = {}
