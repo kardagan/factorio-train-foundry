@@ -82,27 +82,16 @@ local function place(entity, name, offset, direction)
   return child
 end
 
--- Crée toutes les entités cachées d'un bâtiment fraîchement posé (et validé)
--- et retourne le state à ranger dans storage.foundries[unit_number].
-function composite.build(entity)
-  local state = {
-    entity = entity,
-    rails = {},
-    input = nil,       -- coffre de fer (réserve) sur le parvis
-    bpchest = nil,     -- coffre à blueprints sur le parvis
-    signal = nil,
-    combinator = nil,  -- connecteur circuit sur le parvis
-    templates = {},  -- milestone 2 : templates de blueprints
-    queue = {},      -- milestone 3 : file de construction
-    -- Mode d'émission circuit : "stock" ou "request" (par défaut le stock ;
-    -- pour ne rien émettre, ne pas brancher de câble).
-    emit_mode = "stock",
-  }
+-- Largeur d'un module en tuiles (tile_width) : deux fonderies accolées ont
+-- leurs centres espacés de MODULE_WIDTH sur X (même Y).
+local MODULE_WIDTH = 40
 
-  for _, x in ipairs(RAIL_XS) do
+-- Pose les rails internes d'un module sur une plage de X relatifs (impairs),
+-- rangée RAIL_Y. Réutilise un rail déjà présent (pose par-dessus une voie).
+-- Ajoute les rails créés à state.rails.
+local function lay_rails(state, entity, x_from, x_to)
+  for x = x_from, x_to, 2 do
     local pos = { entity.position.x + x, entity.position.y + RAIL_Y }
-    -- Défensif : si un rail existe déjà à cette position (pose par script
-    -- par-dessus une voie), on le réutilise tel quel au lieu de le doubler.
     local occupied = false
     for _, ex in ipairs(entity.surface.find_entities_filtered({
       type = "straight-rail", position = pos, radius = 0.2 })) do
@@ -116,6 +105,29 @@ function composite.build(entity)
       if r then state.rails[#state.rails + 1] = r end
     end
   end
+end
+
+-- Crée le composite d'un bâtiment MAÎTRE fraîchement posé (et validé) et
+-- retourne le state à ranger dans storage.foundries[unit_number].
+function composite.build(entity)
+  local state = {
+    entity = entity,
+    role = "master",   -- master (coffres/signal/GUI) vs extension
+    extensions = {},   -- unit_numbers des extensions accolées (ouest -> est)
+    rails = {},
+    input = nil,       -- coffre de fer (réserve) sur le parvis
+    bpchest = nil,     -- coffre à blueprints sur le parvis
+    signal = nil,
+    combinator = nil,  -- connecteur circuit sur le parvis
+    templates = {},  -- milestone 2 : templates de blueprints
+    queue = {},      -- milestone 3 : file de construction
+    -- Mode d'émission circuit : "stock" ou "request" (par défaut le stock ;
+    -- pour ne rien émettre, ne pas brancher de câble).
+    emit_mode = "stock",
+  }
+
+  -- Rails du master : -17..+17 (impairs), du parvis au mur est.
+  lay_rails(state, entity, -17, 17)
 
   state.signal = place(entity, SIGNAL, SIGNAL_OFFSET, SIGNAL_DIRECTION)
   state.input = place(entity, INPUT, INPUT_OFFSET, defines.direction.north)
@@ -124,8 +136,60 @@ function composite.build(entity)
   state.bpchest = place(entity, BPCHEST, BPCHEST_OFFSET, defines.direction.north)
   composite.set_bpchest_filters(state)
 
+  -- Master neuf = minable (aucune extension) ; explicite pour ne pas dépendre
+  -- du défaut du prototype. Se verrouille dès qu'une extension est accolée.
+  entity.minable_flag = true
+
   return state
 end
+
+-- Crée le composite d'une EXTENSION (module accolé à droite d'une chaîne) :
+-- uniquement ses rails, prolongeant la voie du master. Pas de coffres, pas de
+-- signal, pas de GUI propre. `master_un` = l'unit_number du master de la
+-- chaîne à laquelle elle se rattache.
+function composite.build_extension(entity, master_un)
+  local state = {
+    entity = entity,
+    role = "extension",
+    master = master_un,
+    rails = {},
+  }
+  -- Rails de l'extension : on pose GÉNÉREUSEMENT de -23 à +17 (impairs). Le
+  -- chevauchement à gauche comble le trou entre le dernier rail du module
+  -- précédent et ce module, quel que soit l'écart de snap (38 ou 40) — un rail
+  -- déjà présent est réutilisé (lay_rails saute les positions occupées), donc
+  -- pas de doublon.
+  lay_rails(state, entity, -23, 17)
+  -- Par défaut non minable : l'appelant (refresh_chain_minable) rendra minable
+  -- uniquement la dernière extension de la chaîne. Évite qu'une extension du
+  -- milieu soit minable une fraction de temps avant le recalcul.
+  entity.minable_flag = false
+  return state
+end
+
+-- Détecte, à la pose de `entity`, la fonderie dont le bord EST est accolé au
+-- bord OUEST de `entity` (voisin à l'ouest, même rangée). L'écart de centres
+-- dépend de la collision box (asymétrique) et du snap sur build_grid_size : il
+-- vaut ~38-40. On tolère une plage large et on prend le voisin le PLUS PROCHE
+-- à l'ouest à la bonne hauteur.
+function composite.adjacent_west(entity, foundries)
+  local px, py = entity.position.x, entity.position.y
+  local best, best_dx
+  for _, st in pairs(foundries) do
+    local e = st.entity
+    if e and e.valid and e ~= entity and e.surface == entity.surface then
+      local dx = px - e.position.x  -- >0 si le voisin est à l'OUEST
+      if math.abs(e.position.y - py) < 1.0 and dx > 30 and dx < 46 then
+        if not best_dx or dx < best_dx then
+          best, best_dx = st, dx
+        end
+      end
+    end
+  end
+  return best
+end
+
+composite.MODULE_WIDTH = MODULE_WIDTH
 
 -- Le coffre de réserve (ou nil).
 function composite.reserve(state)

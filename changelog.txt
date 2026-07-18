@@ -2,6 +2,10 @@
 Version: 0.3.0
 Date: 2026-07-18
   Features:
+    - Longer trains: place another Train Foundry right against the east side of an existing one to
+      chain it as an extension. Each module adds room for 5 more vehicles (5 alone, 10 with one
+      extension, 15 with two, and so on). Extensions have no chests or signal of their own; the
+      whole chain is driven from the master's window, and its stock and exit stay on the west end.
     - Dedicated blueprint chest (blue) on the west apron: drop your train blueprints there. The
       book in the main window mirrors it; click a plan to queue it.
     - Equipment grids on locomotives/wagons are now requested and consumed from the stock like
@@ -12,6 +16,9 @@ Date: 2026-07-18
     - Reworked window: blueprint library with per-plan locomotive/wagon counts, rejected plans
       flagged in red with the reason, available/required ratio on each component slot, and a
       Clear queue button.
+    - The master cannot be mined while it still has extensions (remove them from the right first).
+    - The blueprint length limit now follows the chain: a plan that was rejected as too long
+      becomes valid on its own once you add an extension (and vice versa), no re-import needed.
   Bugfixes:
     - Blueprints are validated before building: a plan is rejected up front if it is not a pure
       train, is too long for the foundry, is not on a straight track, or has no locomotive facing

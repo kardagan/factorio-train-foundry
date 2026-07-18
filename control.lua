@@ -48,8 +48,8 @@ local function migrate_all()
   end
   for un, st in pairs(storage.foundries) do
     st.rails = st.rails or {}
-    st.templates = st.templates or {}
-    st.queue = st.queue or {}
+    -- Vieilles saves : toutes les fonderies étaient des maîtres autonomes.
+    st.role = st.role or "master"
     -- Migration de l'ancien couple de booléens vers emit_mode.
     if st.emit_mode == nil then
       st.emit_mode = st.emit_request and "request" or "stock"
@@ -58,7 +58,14 @@ local function migrate_all()
     if not (st.entity and st.entity.valid) then
       composite.destroy(st)
       storage.foundries[un] = nil
+    elseif st.role == "extension" then
+      -- Extension : pas de coffres/signal, juste sa voie.
+      st.master = st.master  -- (conservé tel quel)
     else
+      -- MAÎTRE : champs de production + enfants.
+      st.templates = st.templates or {}
+      st.queue = st.queue or {}
+      st.extensions = st.extensions or {}
       -- Répare les signaux détachés (mauvaise direction dans les vieilles
       -- versions : ils clignotaient sans gouverner le bloc).
       composite.repair_signal(st)
@@ -101,6 +108,22 @@ local function migrate_all()
       end
     end
   end
+
+  -- Recalcule le verrou de minage des chaînes (après rechargement du mod) :
+  -- master minable seulement sans extension ; parmi les extensions, seule la
+  -- dernière (est) est minable — la chaîne se démonte de droite à gauche.
+  for _, st in pairs(storage.foundries) do
+    if st.role == "master" and st.entity and st.entity.valid then
+      local exts = st.extensions or {}
+      st.entity.minable_flag = (#exts == 0)
+      for i, un in ipairs(exts) do
+        local ext = storage.foundries[un]
+        if ext and ext.entity and ext.entity.valid then
+          ext.entity.minable_flag = (i == #exts)
+        end
+      end
+    end
+  end
 end
 
 script.on_init(ensure_storage)
@@ -132,20 +155,64 @@ local function cancel_build(event, e, msg_key)
   end
 end
 
+-- Remonte à la tête (master) d'une chaîne depuis un state quelconque.
+local function master_of(st)
+  if not st then return nil end
+  if st.role == "master" then return st end
+  return st.master and storage.foundries[st.master] or nil
+end
+
+-- Verrouille le minage le long d'une chaîne pour qu'elle se démonte de DROITE
+-- à GAUCHE, sans jamais laisser de trou dans la voie :
+--  - le master n'est minable que s'il n'a aucune extension ;
+--  - parmi les extensions (rangées ouest -> est), seule la DERNIÈRE (est) est
+--    minable ; les autres sont verrouillées.
+-- minable_flag (2.0.26+) bloque main-mining, robots et planner d'un coup.
+local function refresh_chain_minable(master)
+  if not (master and master.entity and master.entity.valid) then return end
+  local exts = master.extensions or {}
+  master.entity.minable_flag = (#exts == 0)
+  for i, un in ipairs(exts) do
+    local ext = storage.foundries[un]
+    if ext and ext.entity and ext.entity.valid then
+      ext.entity.minable_flag = (i == #exts)  -- seule la dernière (est)
+    end
+  end
+end
+
 local function on_built(event)
   ensure_storage()
   local e = event.entity or event.created_entity
   if not (e and e.valid) then return end
   if e.name ~= MAIN then return end
-  -- Limite : UNE fonderie par surface (planète / plateforme spatiale).
+
+  -- Un module accolé à l'OUEST d'une fonderie existante devient une EXTENSION
+  -- de sa chaîne (allonge la voie et la capacité, sans coffres ni signal).
+  local west = composite.adjacent_west(e, storage.foundries)
+  if west then
+    local master = master_of(west)
+    if not master then
+      cancel_build(event, e, "extension-need-master")
+      return
+    end
+    local st = composite.build_extension(e, master.entity.unit_number)
+    storage.foundries[e.unit_number] = st
+    master.extensions = master.extensions or {}
+    master.extensions[#master.extensions + 1] = e.unit_number
+    refresh_chain_minable(master)  -- nouvelle extension = seule minable
+    return
+  end
+
+  -- Sinon c'est un nouveau MAÎTRE : une seule chaîne (un master) par surface.
   for _, st in pairs(storage.foundries) do
-    if st.entity and st.entity.valid and st.entity.surface == e.surface then
+    if st.role == "master" and st.entity and st.entity.valid
+      and st.entity.surface == e.surface then
       cancel_build(event, e, "one-per-surface")
       return
     end
   end
-  -- Exigence de pose : un rail droit est-ouest existant à la position de
-  -- raccord, sous le parvis ouest (la porte se pose sur l'extrémité d'une
+  -- Exigence de pose du master : un rail droit est-ouest existant à la position
+  -- de raccord, sous le parvis ouest (la porte se pose sur l'extrémité d'une
   -- voie). Le reste des collisions est géré par le moteur (mask par défaut).
   if not composite.has_junction_rail(e) then
     cancel_build(event, e, "need-rails")
@@ -160,10 +227,51 @@ local function on_removed(event)
   if not (e and e.valid) then return end
   if e.name ~= MAIN then return end
   local st = storage.foundries[e.unit_number]
+  if not st then return end
+
+  -- Détache une EXTENSION de sa chaîne (met à jour la liste du master).
+  if st.role == "extension" then
+    local master = st.master and storage.foundries[st.master]
+    if master and master.extensions then
+      for i = #master.extensions, 1, -1 do
+        if master.extensions[i] == e.unit_number then
+          table.remove(master.extensions, i)
+        end
+      end
+      refresh_chain_minable(master)  -- l'avant-dernière devient minable
+    end
+    composite.destroy(st)
+    storage.foundries[e.unit_number] = nil
+    return
+  end
+
   -- Rend les composants d'une construction en cours avant le nettoyage.
-  if st and st.work and st.work.phase ~= "waiting" and st.work.need then
+  if st.work and st.work.phase ~= "waiting" and st.work.need then
     builder.refund(st, st.work.need)
   end
+
+  -- Le master disparaît alors qu'il a des extensions (mort par biters,
+  -- artillerie, script...) : le minage à la main est bloqué (minable_flag),
+  -- mais une destruction non-minage passe outre. On nettoie toute la chaîne
+  -- pour ne pas laisser d'extensions orphelines (states + rails). L'item de
+  -- chaque extension est rendu au sol (le joueur l'avait payé).
+  for _, ext_un in ipairs(st.extensions or {}) do
+    local ext = storage.foundries[ext_un]
+    if ext then
+      composite.destroy(ext)
+      if ext.entity and ext.entity.valid then
+        ext.entity.surface.spill_item_stack({
+          position = ext.entity.position,
+          stack = { name = MAIN, count = 1 },
+          enable_looted = true,
+          force = ext.entity.force,
+        })
+        ext.entity.destroy()
+      end
+      storage.foundries[ext_un] = nil
+    end
+  end
+
   composite.destroy(st)
   storage.foundries[e.unit_number] = nil
 end
@@ -225,10 +333,20 @@ local function sync_templates(state)
   local inv = chest.get_inventory(defines.inventory.chest)
   if not inv then return end
 
+  -- Capacité courante de la chaîne (base + extensions) : sert à refuser un
+  -- train trop long à l'import. Change si on ajoute/retire une extension.
+  local capacity = builder.capacity(state)
+
+  -- Si la capacité a changé (extension ajoutée/retirée), on invalide le cache
+  -- par signature pour re-parser : un plan « trop long » peut redevenir valide
+  -- (et inversement).
   local old_by_sig = {}
-  for _, t in ipairs(state.templates) do
-    if t.signature then old_by_sig[t.signature] = t end
+  if state.last_capacity == capacity then
+    for _, t in ipairs(state.templates) do
+      if t.signature then old_by_sig[t.signature] = t end
+    end
   end
+  state.last_capacity = capacity
 
   local templates = {}
   for i = 1, #inv do
@@ -239,7 +357,7 @@ local function sync_templates(state)
       if existing then
         templates[#templates + 1] = existing
       else
-        local template, err, detail = blueprint.parse(stack)
+        local template, err, detail = blueprint.parse(stack, capacity)
         if template then
           template.name = (template.label and template.label ~= ""
             and template.label) or ""
@@ -333,9 +451,11 @@ end
 script.on_nth_tick(TICK_INTERVAL, function()
   ensure_storage()
   -- unit_number -> le livre a-t-il changé ce tick (coffre modifié) ?
+  -- Seuls les MAÎTRES portent file/travail/coffres : on ignore les extensions
+  -- (elles n'apportent que voie et capacité).
   local book_changed = {}
   for un, st in pairs(storage.foundries) do
-    if st.entity and st.entity.valid then
+    if st.role ~= "extension" and st.entity and st.entity.valid then
       book_changed[un] = sync_templates(st)
       process_foundry(st)
       builder.update_circuit(st)
@@ -486,7 +606,9 @@ script.on_event(defines.events.on_gui_opened, function(event)
 
   local st
   if e.name == MAIN then
-    st = storage.foundries[e.unit_number]
+    -- Clic sur une EXTENSION → on ouvre la fenêtre de son MAÎTRE (transparent
+    -- pour le joueur : toute la chaîne se pilote depuis une seule fenêtre).
+    st = master_of(storage.foundries[e.unit_number])
   elseif e.name == "tf-combinator" then
     for _, s in pairs(storage.foundries) do
       if s.combinator == e then st = s break end
@@ -508,7 +630,9 @@ local function open_overview(player)
   ensure_storage()
   local surface = player.physical_surface or player.surface
   for _, st in pairs(storage.foundries) do
-    if st.entity and st.entity.valid and st.entity.surface == surface then
+    if st.role ~= "extension" and st.entity and st.entity.valid
+      and st.entity.surface == surface then
+      sync_templates(st)
       gui.open(player, st)
       return
     end

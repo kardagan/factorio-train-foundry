@@ -75,7 +75,10 @@ end
 -- Lit un blueprint (LuaItemStack OU LuaRecord de la bibliothèque) et en
 -- extrait un template de train. Retourne template, nil en cas de succès ;
 -- nil, "clé-erreur" sinon (clés de la section [tf-msg] des locales).
-function blueprint.parse(source)
+-- `capacity` = longueur max autorisée (défaut builder.MAX_STOCK) : dépend de
+-- la chaîne d'extensions de la fonderie qui importe.
+function blueprint.parse(source, capacity)
+  capacity = capacity or builder.MAX_STOCK
   if not (source and source.valid) then
     return nil, "import-not-blueprint"
   end
@@ -125,9 +128,10 @@ function blueprint.parse(source)
     return nil, "import-not-clean", table.concat(names, " ")
   end
   -- Refuse dès l'import un train trop long pour la voie interne (plutôt que
-  -- de le lancer et voir les véhicules retomber dans le coffre).
-  if #stock > builder.MAX_STOCK then
-    return nil, "import-too-long", tostring(builder.MAX_STOCK)
+  -- de le lancer et voir les véhicules retomber dans le coffre). La capacité
+  -- dépend de la chaîne d'extensions de la fonderie.
+  if #stock > capacity then
+    return nil, "import-too-long", tostring(capacity)
   end
 
   -- Le train du blueprint doit être posé sur une voie DROITE : on détecte

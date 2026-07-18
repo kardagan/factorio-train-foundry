@@ -181,25 +181,8 @@ function gui.refresh_templates(player, state)
   end
   list.clear()
 
-  -- Ligne d'accès rapide au coffre à plans : le « + » ferme la fenêtre
-  -- principale et ouvre la fenêtre du coffre (dépôt/retrait des blueprints).
-  local add_row = list.add({ type = "flow", direction = "horizontal" })
-  add_row.style.vertical_align = "center"
-  add_row.style.bottom_margin = 8
-  local add = add_row.add({
-    type = "sprite-button",
-    name = "tf-open-bpchest",
-    style = "slot_button",
-    sprite = "utility/add",
-    tooltip = { "tf-gui.open-bpchest" },
-  })
-  add.style.size = 40
-  local add_lbl = add_row.add({
-    type = "label",
-    caption = { "tf-gui.open-bpchest" },
-  })
-  add_lbl.style.left_margin = 8
-
+  -- L'accès au coffre à plans est le petit « + » de l'en-tête (voir gui.open) ;
+  -- pas de ligne dédiée ici.
   if #state.templates == 0 then
     local hint = list.add({
       type = "label",
@@ -263,7 +246,8 @@ function gui.refresh_templates(player, state)
       end
       if warn_sprite then
         local warn = head.add({ type = "sprite", sprite = warn_sprite })
-        warn.style.size = 20
+        warn.style.size = 16
+        warn.style.stretch_image_to_widget_size = true
         warn.style.right_margin = 4
       end
     end
@@ -528,19 +512,29 @@ function gui.open(player, state)
   })
   -- Vue liste : 4 slots de 40 + titre + scrollbar.
   left.style.width = 380
-  left.add({
+  -- En-tête : titre à gauche + petit « + » collé au bord DROIT (ouvre le
+  -- coffre à plans). Un empty-widget extensible entre les deux pousse le
+  -- bouton contre le bord droit (technique des titlebars — plus fiable qu'un
+  -- label stretchable).
+  local lhead = left.add({ type = "flow", direction = "horizontal" })
+  lhead.style.vertical_align = "center"
+  lhead.style.horizontally_stretchable = true
+  lhead.add({
     type = "label",
     caption = { "tf-gui.templates-title" },
     style = "caption_label",
   })
-  local subtitle = left.add({
-    type = "label",
-    caption = { "tf-gui.templates-hint" },
+  local spacer = lhead.add({ type = "empty-widget" })
+  spacer.style.horizontally_stretchable = true
+  local addbtn = lhead.add({
+    type = "sprite-button",
+    name = "tf-open-bpchest",
+    style = "tool_button",
+    sprite = "utility/add",
+    tooltip = { "tf-gui.open-bpchest" },
   })
-  subtitle.style.single_line = false
-  subtitle.style.maximal_width = 340
-  subtitle.style.font_color = { 0.7, 0.7, 0.7 }
-  subtitle.style.bottom_margin = 4
+  addbtn.style.size = 24
+  lhead.style.bottom_margin = 8  -- espace entre l'en-tête et la liste des plans
   -- Hauteur FIXE : la fenêtre ne grandit pas avec le nombre de plans.
   local tscroll = left.add({
     type = "scroll-pane", name = "tf-templates-scroll",

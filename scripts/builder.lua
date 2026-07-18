@@ -21,10 +21,17 @@ local STOCK_TYPES = { "locomotive", "cargo-wagon", "fluid-wagon",
 local RAIL_Y = 5
 local HEAD_X = -12
 local SPACING = 7
--- Longueur max d'un train (nombre de véhicules) que la voie interne peut
--- accueillir. Exposé pour la validation à l'import (blueprint.lua).
+-- Longueur max d'un train (nombre de véhicules) par MODULE. La capacité réelle
+-- d'une fonderie = PER_MODULE × (1 + nombre d'extensions accolées).
 builder.MAX_STOCK = 5
-local MAX_STOCK = builder.MAX_STOCK
+local PER_MODULE = builder.MAX_STOCK
+
+-- Capacité (véhicules max) d'une chaîne : base + une portion par extension.
+-- `state` est le master (celui qui porte extensions/queue/work).
+function builder.capacity(state)
+  local n_ext = (state and state.extensions and #state.extensions) or 0
+  return PER_MODULE * (1 + n_ext)
+end
 
 -- Durée de construction : 4 s par véhicule.
 builder.TICKS_PER_VEHICLE = 240
@@ -183,13 +190,18 @@ function builder.refund(state, need)
   end
 end
 
--- La voie interne est-elle libre de tout véhicule ?
+-- Largeur d'un module (doit coïncider avec composite.MODULE_WIDTH).
+local MODULE_WIDTH = 40
+
+-- La voie interne est-elle libre de tout véhicule ? La zone s'étend vers l'est
+-- d'un module par extension accolée (voie continue de toute la chaîne).
 function builder.track_free(state)
   local e = state.entity
   if not (e and e.valid) then return false end
+  local n_ext = (state.extensions and #state.extensions) or 0
   local area = {
     { e.position.x - 18, e.position.y + RAIL_Y - 1.5 },
-    { e.position.x + 18, e.position.y + RAIL_Y + 1.5 },
+    { e.position.x + 18 + n_ext * MODULE_WIDTH, e.position.y + RAIL_Y + 1.5 },
   }
   return #e.surface.find_entities_filtered({
     type = STOCK_TYPES, area = area }) == 0
@@ -238,7 +250,9 @@ end
 function builder.spawn(state, template, params)
   local e = state.entity
   if not (e and e.valid) then return nil, "spawn-failed" end
-  if #template.stock > MAX_STOCK then return nil, "spawn-too-long" end
+  if #template.stock > builder.capacity(state) then
+    return nil, "spawn-too-long"
+  end
   local inv = shared_inventory(state)
 
   -- Pose des véhicules. Le template est trié tête (ouest/nord du BP) vers
@@ -435,7 +449,9 @@ end
 -- Construction immédiate tout-en-un (interface remote / tests) : vérifie les
 -- composants, la voie et la sortie, consomme puis pose.
 function builder.try_spawn(state, template, params)
-  if #template.stock > MAX_STOCK then return nil, "spawn-too-long" end
+  if #template.stock > builder.capacity(state) then
+    return nil, "spawn-too-long"
+  end
   local need = builder.compute_need(template)
   local miss, miss_str = builder.missing(state, need)
   if next(miss) then return nil, "spawn-missing", miss_str end
