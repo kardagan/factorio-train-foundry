@@ -167,31 +167,10 @@ function blueprint.parse(source, capacity)
     end
   end
 
-  -- La sortie de la fonderie est à l'OUEST : il faut au moins une LOCOMOTIVE
-  -- capable de tirer le train vers l'ouest, sinon il ne peut pas sortir. On
-  -- reproduit le mapping orientation -> direction du builder (BP horizontal :
-  -- orientation ≈ 0.25 = est, sinon ouest ; BP vertical : ≈ 0.5 = est, sinon
-  -- ouest) et on exige au moins une loco orientée ouest.
-  local has_west_loco = false
-  for _, e in ipairs(stock) do
-    local proto = prototypes.entity[e.name]
-    if proto and proto.type == "locomotive" then
-      local o = e.orientation or (horizontal and 0.75 or 0)
-      local faces_west
-      if horizontal then
-        faces_west = not (math.abs(o - 0.25) < 0.26)
-      else
-        faces_west = not (math.abs(o - 0.5) < 0.26)
-      end
-      if faces_west then
-        has_west_loco = true
-        break
-      end
-    end
-  end
-  if not has_west_loco then
-    return nil, "import-no-west-loco"
-  end
+  -- Aucune contrainte de SENS des locomotives : la fonderie peut sortir à gauche
+  -- (ouest) et/ou à droite (est) selon la configuration, et le pathfinder route
+  -- le train par la sortie ouverte que son schedule atteint. Un blueprint avec
+  -- des locos dans n'importe quel sens est donc accepté.
 
   local template = {
     name = nil,        -- rempli par l'appelant ("Train N")

@@ -484,13 +484,13 @@ function gui.open(player, state)
   drag.style.horizontally_stretchable = true
   drag.style.height = 24
   drag.drag_target = frame
-  -- Bouton d'ouverture de la fenêtre déportée "Réseau de circuit".
+  -- Bouton d'ouverture de la fenêtre déportée "Configuration" (circuit + sorties).
   titlebar.add({
     type = "sprite-button",
     name = "tf-circuit-toggle",
     style = "frame_action_button",
     sprite = "utility/circuit_network_panel",
-    tooltip = { "tf-gui.circuit-title" },
+    tooltip = { "tf-gui.config-title" },
   })
   titlebar.add({
     type = "sprite-button",
@@ -670,7 +670,7 @@ function gui.toggle_circuit(player, state)
   local titlebar = frame.add({ type = "flow", direction = "horizontal" })
   titlebar.add({
     type = "label",
-    caption = { "tf-gui.circuit-title" },
+    caption = { "tf-gui.config-title" },
     style = "frame_title",
     ignored_by_interaction = true,
   })
@@ -706,6 +706,24 @@ function gui.toggle_circuit(player, state)
       caption = { m[2] },
       state = (mode == m[1]),
       tags = { tf_emit_mode = m[1] },
+    })
+  end
+
+  -- Côtés de sortie du train : cases INDÉPENDANTES (gauche et/ou droite). Gauche
+  -- ouverte par défaut ; cocher droite pose la voie + le signal est.
+  inner.add({
+    type = "label",
+    caption = { "tf-gui.exit-title" },
+    style = "caption_label",
+  })
+  for _, s in ipairs({ { "left", "tf-gui.exit-left", state.exit_left },
+                       { "right", "tf-gui.exit-right", state.exit_right } }) do
+    inner.add({
+      type = "checkbox",
+      name = "tf-exit-" .. s[1],
+      caption = { s[2] },
+      state = s[3] and true or false,
+      tags = { tf_exit_side = s[1] },
     })
   end
 

@@ -14,8 +14,8 @@ schedule, train group and blueprint parameters included.
 
 ## How it works
 
-- **Place it on a rail** — the exit gate goes on the end of an east-west rail
-  line (one straight rail under the western apron).
+- **Place it anywhere buildable** — the foundry lays its own exit track; just
+  connect your network to it afterwards.
 - **Drop blueprints in the blue chest** on the west apron (by hand or with
   inserters); the window lists them. The blueprint must contain only the train.
 
@@ -24,6 +24,9 @@ schedule, train group and blueprint parameters included.
 - **Queue trains** — click a template; blueprint parameters are asked once.
 - **Feed the parts** — locomotives, wagons, fuel, ammo and equipment-grid gear
   come from the foundry's internal stock; fill it by hand or with inserters.
+- **Choose the exit side** — left (west) by default; open the Configuration
+  window (panel button in the title bar) to open the right (east) exit too. The
+  train takes whichever open side its schedule leads to.
 - Built trains **drive off** with their schedule, group, fuel and equipment set.
 
 ## Longer trains
@@ -36,8 +39,8 @@ vehicles per module). The chain is driven from a single window.
 
 ## Extras
 
-- **Circuit network** — wire the connector to broadcast the internal stock or the
-  missing components.
+- **Circuit network** — wire the connector and pick, in the Configuration window,
+  whether to broadcast the internal stock or the missing components.
 - **Remote control** — a shortcut-bar button (or `CTRL+ALT+F`) opens the
   foundry's window from anywhere. One foundry (chain) per planet.
 - Compatible with vanilla, Space Age and Nullius.

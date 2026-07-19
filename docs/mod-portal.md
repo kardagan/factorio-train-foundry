@@ -20,9 +20,8 @@ orientation, colors, fuel, schedule, train group and blueprint parameters.
 
 ### How it works
 
-- **Place it on a rail.** The foundry's exit gate goes on the end of an
-  east-west rail line (one straight rail under the western apron). The rest of
-  the building can sit anywhere buildable.
+- **Place it anywhere buildable.** The foundry lays its own exit track — no need
+  to prepare a rail first. Just connect your network to the exit afterwards.
 - **Drop blueprints in the chest.** A dedicated blue blueprint chest sits on the
   west apron — drop your train blueprints there (by hand or with inserters). The
   foundry's window lists them; click a plan to queue it. Blueprints must contain
@@ -40,6 +39,14 @@ orientation, colors, fuel, schedule, train group and blueprint parameters.
 
 ![The interface](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/interface.png)
 
+### Left or right exit
+
+Trains leave to the **left (west)** by default. Open the foundry's window, click
+the panel button in the title bar, and use the **Configuration** window to tick
+**Left (west)** and/or **Right (east)** — either or both sides can be open at
+once. The train takes whichever open side its schedule leads to. On a chained
+foundry the east exit follows the far end of the chain automatically.
+
 ### Longer trains
 
 Need trains longer than five vehicles? Place another Train Foundry right against
@@ -47,14 +54,16 @@ the east side of an existing one and it chains on as an **extension** — the
 internal track and capacity extend across the whole hall. Each module adds room
 for five more vehicles (5 alone, 10 with one extension, 15 with two, and so on).
 Extensions have no chests or signal of their own: the whole chain is driven from
-one window, and the stock and exit stay on the west end.
+one window, and the stock stays on the west end while the exits work across the
+whole hall.
 
 ![Chained foundries for longer trains](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/extensions.png)
 
 ### Extras
 
-- **Circuit network.** Wire the foundry's connector to broadcast either the
-  internal stock contents or the components it still needs.
+- **Circuit network.** Wire the foundry's connector and, in the Configuration
+  window, choose to broadcast either the internal stock contents or the
+  components it still needs.
 - **Remote control.** A shortcut-bar button (or CTRL+ALT+F) opens the foundry's
   window from anywhere — no need to walk to it. One foundry (chain) per planet.
 - **Compatible** with vanilla, Space Age and Nullius.

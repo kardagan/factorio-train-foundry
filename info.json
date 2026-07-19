@@ -1,6 +1,6 @@
 {
   "name": "train-foundry",
-  "version": "0.3.1",
+  "version": "0.4.1",
   "title": "Train Foundry",
   "author": "kardagan",
   "description": "A large train foundry building that assembles complete trains from blueprint templates: import a train blueprint, queue it, feed the parts with inserters, and watch the finished train fuel up and drive off onto your rail network on its own.",

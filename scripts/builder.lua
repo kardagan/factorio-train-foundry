@@ -199,20 +199,41 @@ function builder.track_free(state)
   local e = state.entity
   if not (e and e.valid) then return false end
   local n_ext = (state.extensions and #state.extensions) or 0
+  -- Borne est étendue de +18 à +21 : la sortie est prolonge la voie au-delà du
+  -- bord (jusqu'à +21), un véhicule y stationnant doit être détecté.
   local area = {
     { e.position.x - 18, e.position.y + RAIL_Y - 1.5 },
-    { e.position.x + 18 + n_ext * MODULE_WIDTH, e.position.y + RAIL_Y + 1.5 },
+    { e.position.x + 21 + n_ext * MODULE_WIDTH, e.position.y + RAIL_Y + 1.5 },
   }
   return #e.surface.find_entities_filtered({
     type = STOCK_TYPES, area = area }) == 0
 end
 
--- Le bloc de sortie (gouverné par le signal de la porte) est-il libre ?
-function builder.exit_open(state)
-  if state.signal and state.signal.valid then
-    return state.signal.signal_state == defines.signal_state.open
+-- Le bloc de sortie est-il libre ? Avec deux sorties possibles (ouest/est), il
+-- suffit qu'UN côté OUVERT ait son signal ouvert : le pathfinder choisira ce
+-- côté selon le schedule. Un signal absent est traité comme ouvert (comme avant).
+-- Un signal DÉTACHÉ (aucun rail connecté — ex. fonderie posée sans réseau câblé
+-- côté sortie) ne gouverne aucun bloc : on le considère ouvert, sinon la
+-- production serait bloquée SILENCIEUSEMENT en phase "ready". Dès que le joueur
+-- câble sa voie, le signal s'attache et gouverne réellement le bloc.
+local function signal_clear(sig)
+  if sig and sig.valid then
+    if #sig.get_connected_rails() == 0 then return true end
+    return sig.signal_state == defines.signal_state.open
   end
   return true
+end
+
+function builder.exit_open(state)
+  -- Garde-fou : un state non migré (ni exit_left ni exit_right) retombe sur le
+  -- signal ouest seul, comportement historique. En pratique migrate_all remplit
+  -- toujours ces champs avant le premier appel, mais on ne s'y fie pas.
+  if not (state.exit_left or state.exit_right) then
+    return signal_clear(state.signal)
+  end
+  local left_ok = state.exit_left and signal_clear(state.signal)
+  local right_ok = state.exit_right and signal_clear(state.signal_east)
+  return left_ok or right_ok
 end
 
 -- Substitution des paramètres de blueprint (BP paramétrés 2.0) : `params`

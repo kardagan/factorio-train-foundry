@@ -1,4 +1,22 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.4.1
+Date: 2026-07-19
+  Features:
+    - Optional right-side (east) exit: trains can now leave the foundry to the right as well as the
+      left. Open the foundry window, click the panel button in the title bar, and tick "Right (east)"
+      in the Configuration window to lay an east exit track and signal. Either or both sides can be
+      open at once; the train picks the side its schedule reaches. On a chained foundry the east exit
+      follows the far (east) end of the chain and re-anchors automatically when extensions are added
+      or removed. New foundries default to left-only, so existing setups are unchanged.
+  Changes:
+    - Reworked foundry sprite: both side walls are now closed; the exit track is drawn over the wall
+      only where a train actually leaves, so it reads as a clean gate on each open side.
+    - The side panel is now titled "Configuration" (exit sides + circuit read mode).
+    - Blueprints are no longer rejected for locomotive facing: a train facing any direction is
+      accepted, since the foundry can now dispatch to either side.
+    - Placing a foundry no longer requires a pre-existing rail under the exit: the building lays its
+      own exit track. Just connect your network to it afterwards.
+---------------------------------------------------------------------------------------------------
 Version: 0.3.1
 Date: 2026-07-19
   Bugfixes:

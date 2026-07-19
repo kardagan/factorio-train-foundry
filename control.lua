@@ -35,6 +35,41 @@ local function ensure_storage()
   storage.foundries = storage.foundries or {}
 end
 
+-- Entité du BORD EST d'une chaîne : la dernière extension (rangées ouest -> est)
+-- si la chaîne en a, sinon le master lui-même. C'est là que débouche la voie de
+-- sortie est. Sert d'ancre à composite.open_east.
+local function east_end_entity(master)
+  local exts = master and master.extensions or {}
+  for i = #exts, 1, -1 do
+    local ext = storage.foundries[exts[i]]
+    if ext and ext.entity and ext.entity.valid then return ext.entity end
+  end
+  return master and master.entity
+end
+
+-- Liste ORDONNÉE ouest->est des entités valides d'une chaîne : master puis ses
+-- extensions dans l'ordre. Sert d'entrée à composite.rebuild_chain_track.
+local function chain_entities(master)
+  local list = {}
+  if master and master.entity and master.entity.valid then
+    list[#list + 1] = master.entity
+  end
+  for _, un in ipairs(master and master.extensions or {}) do
+    local ext = storage.foundries[un]
+    if ext and ext.entity and ext.entity.valid then
+      list[#list + 1] = ext.entity
+    end
+  end
+  return list
+end
+
+-- Reconstruit toute la voie de la chaîne (jonctions + sortie est ré-ancrée) —
+-- à appeler à chaque ajout/retrait d'extension. Centralise le nettoyage pour
+-- éviter rails orphelins (retrait) et jonctions cassées (ajout).
+local function refresh_chain_track(master)
+  if master then composite.rebuild_chain_track(master, chain_entities(master)) end
+end
+
 -- Migration : remplissage des champs manquants des vieux states et nettoyage
 -- des fonderies dont l'entité a disparu (changement de prototype, etc.).
 local function migrate_all()
@@ -55,6 +90,9 @@ local function migrate_all()
       st.emit_mode = st.emit_request and "request" or "stock"
       st.emit_stock, st.emit_request = nil, nil
     end
+    -- Côtés de sortie (ajoutés avec la sortie est). Vieille save = gauche seule.
+    if st.exit_left == nil then st.exit_left = true end
+    if st.exit_right == nil then st.exit_right = false end
     if not (st.entity and st.entity.valid) then
       composite.destroy(st)
       storage.foundries[un] = nil
@@ -75,6 +113,19 @@ local function migrate_all()
       composite.ensure_input(st)
       composite.ensure_combinator(st)
       composite.ensure_bpchest(st)
+      -- Raccord ouest en RAIL_OVER (écrase le mur) : les vieilles fonderies
+      -- l'avaient en rail normal. On le reconstruit au bon calque si la sortie
+      -- gauche est ouverte ; sinon on s'assure qu'il est bien retiré.
+      if st.exit_left then
+        composite.close_west(st)
+        composite.open_west(st)
+      else
+        composite.close_west(st)
+      end
+      -- Reconstruit toute la voie de la chaîne : comble les jonctions (trou d'une
+      -- tuile entre modules sur les vieilles saves) et ré-ancre la sortie est (si
+      -- active) sur le bon bord. Remplace l'ancienne réparation séparée du signal.
+      refresh_chain_track(st)
     end
   end
 
@@ -90,9 +141,12 @@ local function migrate_all()
   end
   for _, st in pairs(storage.foundries) do
     for _, r in ipairs(st.rails or {}) do ref(r) end
+    for _, r in ipairs(st.rails_east or {}) do ref(r) end
+    for _, r in ipairs(st.rails_junction or {}) do ref(r) end
     ref(st.input)
     ref(st.bpchest)
     ref(st.signal)
+    ref(st.signal_east)
     ref(st.combinator)
     -- Legacy : anneau de quais + 4 combinators d'anciennes versions.
     for _, c in ipairs(st.inputs or {}) do ref(c) end
@@ -100,8 +154,8 @@ local function migrate_all()
   end
   for _, surface in pairs(game.surfaces) do
     for _, ent in pairs(surface.find_entities_filtered({
-      name = { "tf-rail", "tf-input", "tf-signal", "tf-combinator",
-               "tf-blueprints" } })) do
+      name = { "tf-rail", "tf-rail-over", "tf-input", "tf-signal",
+               "tf-combinator", "tf-blueprints" } })) do
       local key = ent.name .. ":" .. ent.position.x .. ":" .. ent.position.y
       if not referenced[key] then
         ent.destroy()
@@ -200,6 +254,10 @@ local function on_built(event)
     master.extensions = master.extensions or {}
     master.extensions[#master.extensions + 1] = e.unit_number
     refresh_chain_minable(master)  -- nouvelle extension = seule minable
+    -- Reconstruit toute la voie de la chaîne : comble les jonctions (RAIL_OVER)
+    -- et ré-ancre la sortie est sur le nouveau bord. Centralisé => pas d'orphelin
+    -- ni de jonction cassée.
+    refresh_chain_track(master)
     return
   end
 
@@ -211,13 +269,10 @@ local function on_built(event)
       return
     end
   end
-  -- Exigence de pose du master : un rail droit est-ouest existant à la position
-  -- de raccord, sous le parvis ouest (la porte se pose sur l'extrémité d'une
-  -- voie). Le reste des collisions est géré par le moteur (mask par défaut).
-  if not composite.has_junction_rail(e) then
-    cancel_build(event, e, "need-rails")
-    return
-  end
+  -- Plus d'exigence de rail préparé à la pose : la fonderie pose elle-même sa
+  -- voie interne (et donc son raccord de sortie ouest) via composite.build. Le
+  -- joueur raccorde son réseau à la voie de sortie après coup ; la sortie est
+  -- (droite) s'active à la demande depuis la fenêtre.
   storage.foundries[e.unit_number] = composite.build(e)
 end
 
@@ -238,10 +293,17 @@ local function on_removed(event)
           table.remove(master.extensions, i)
         end
       end
-      refresh_chain_minable(master)  -- l'avant-dernière devient minable
     end
+    -- Ordre IMPORTANT : détruire l'extension AVANT de reconstruire la chaîne,
+    -- pour libérer ses positions (sinon rebuild reposerait des rails-over dessus).
     composite.destroy(st)
     storage.foundries[e.unit_number] = nil
+    if master then
+      refresh_chain_minable(master)  -- l'avant-dernière devient minable
+      -- Reconstruit la voie sur la chaîne réduite : purge les rails de jonction
+      -- (plus d'orphelins) et ré-ancre la sortie est sur le nouveau bord.
+      refresh_chain_track(master)
+    end
     return
   end
 
@@ -673,7 +735,7 @@ end)
 -- Radios du circuit : émettre le stock OU les requests (exclusif).
 script.on_event(defines.events.on_gui_checked_state_changed, function(event)
   local el = event.element
-  if not (el and el.valid and el.tags and el.tags.tf_emit_mode) then return end
+  if not (el and el.valid and el.tags) then return end
   local player = game.get_player(event.player_index)
   if not player then return end
   local un = gui.window_unit_number(player)
@@ -681,10 +743,39 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
   ensure_storage()
   local st = storage.foundries[un]
   if not (st and st.entity and st.entity.valid) then return end
-  st.emit_mode = el.tags.tf_emit_mode
-  -- Radios exclusifs : décoche l'autre bouton.
-  gui.set_emit_mode(player, st.emit_mode)
-  builder.update_circuit(st)
+
+  -- Mode d'émission circuit (radios exclusifs).
+  if el.tags.tf_emit_mode then
+    st.emit_mode = el.tags.tf_emit_mode
+    gui.set_emit_mode(player, st.emit_mode)
+    builder.update_circuit(st)
+    return
+  end
+
+  -- Côtés de sortie (cases indépendantes). On interdit de fermer les DEUX côtés
+  -- (le train n'aurait plus de sortie) : la dernière case cochée se re-coche.
+  if el.tags.tf_exit_side then
+    local side = el.tags.tf_exit_side
+    local want = el.state
+    if not want and not (side == "left" and st.exit_right)
+                and not (side == "right" and st.exit_left) then
+      -- Tentative de tout fermer : on annule, la case reste cochée.
+      el.state = true
+      return
+    end
+    if side == "left" then
+      st.exit_left = want
+      if want then composite.open_west(st) else composite.close_west(st) end
+    else
+      st.exit_right = want
+      if want then
+        composite.open_east(st, east_end_entity(st))
+      else
+        composite.close_east(st, east_end_entity(st))
+      end
+    end
+    return
+  end
 end)
 
 script.on_event(defines.events.on_gui_click, function(event)

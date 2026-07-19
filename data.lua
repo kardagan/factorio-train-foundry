@@ -47,6 +47,7 @@ styles["tf_slot_missing"] = {
 
 local MAIN       = "train-foundry"
 local RAIL       = "tf-rail"
+local RAIL_OVER  = "tf-rail-over"
 local INPUT      = "tf-input"
 local SIGNAL     = "tf-signal"
 local COMBINATOR = "tf-combinator"
@@ -189,6 +190,27 @@ local rail = table.deepcopy(data.raw["straight-rail"]["straight-rail"])
 rail.name = RAIL
 hide(rail)
 
+-- Rail "over" : identique au rail interne, MAIS dessiné PAR-DESSUS le sprite du
+-- bâtiment (qui est en "lower-object"). Sert au tronçon de sortie qui traverse
+-- le MUR du bâtiment (est) : un rail vanilla se dessine en couches rail-* (sous
+-- lower-object) et serait masqué par le mur. On surcharge les 5 couches de
+-- pictures.render_layers (le mapping feuille->couche d'un rail 2.0 est centralisé
+-- là, pas sur chaque sprite) vers object / higher-object-above (> lower-object),
+-- pour que la voie "écrase" visuellement le mur. Défensif si la structure du
+-- prototype vanilla évolue.
+local rail_over = table.deepcopy(data.raw["straight-rail"]["straight-rail"])
+rail_over.name = RAIL_OVER
+hide(rail_over)
+if rail_over.pictures and type(rail_over.pictures) == "table" then
+  rail_over.pictures.render_layers = {
+    stone_path_lower = "object",
+    stone_path       = "object",
+    tie              = "object",
+    screw            = "object",
+    metal            = "higher-object-above",
+  }
+end
+
 -- Réserve : un VRAI coffre de fer (visible, posé sur le parvis ouest). Les
 -- bras y déposent/prennent sans souci (c'est un coffre vanilla). Solidaire
 -- de la fonderie : non minable, indestructible, créé/détruit avec elle.
@@ -279,7 +301,7 @@ combinator.selection_priority = 100
 data:extend({
   { type = "recipe-category", name = "train-foundry-dummy" },
 
-  main, rail, input, signal, combinator, bpchest,
+  main, rail, rail_over, input, signal, combinator, bpchest,
 
   -- Vue d'ensemble : bouton dans la barre de raccourcis + touche
   -- personnalisable (défaut CTRL+ALT+F) ouvrant la fonderie de la surface
