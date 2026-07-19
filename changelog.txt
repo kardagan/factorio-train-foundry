@@ -1,5 +1,5 @@
 ---------------------------------------------------------------------------------------------------
-Version: 0.4.1
+Version: 0.5.0
 Date: 2026-07-19
   Features:
     - Optional right-side (east) exit: trains can now leave the foundry to the right as well as the
