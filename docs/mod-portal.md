@@ -47,6 +47,8 @@ the panel button in the title bar, and use the **Configuration** window to tick
 once. The train takes whichever open side its schedule leads to. On a chained
 foundry the east exit follows the far end of the chain automatically.
 
+![The Configuration window](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/configuration.png)
+
 ### Longer trains
 
 Need trains longer than five vehicles? Place another Train Foundry right against

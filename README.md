@@ -27,6 +27,9 @@ schedule, train group and blueprint parameters included.
 - **Choose the exit side** — left (west) by default; open the Configuration
   window (panel button in the title bar) to open the right (east) exit too. The
   train takes whichever open side its schedule leads to.
+
+  ![The Configuration window](docs/configuration.png)
+
 - Built trains **drive off** with their schedule, group, fuel and equipment set.
 
 ## Longer trains
