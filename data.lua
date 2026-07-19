@@ -79,6 +79,14 @@ local main = {
   -- de raccord → la jonction visuelle est masquée par l'art.
   collision_box = { { -18.0, -10.7 }, { 19.7, 10.7 } },
   selection_box = { { -20, -11 }, { 20, 11 } },
+  -- Priorité de sélection SOUS le défaut (50) : la selection_box couvre tout
+  -- le footprint 40×22, y compris la zone libre du parvis où le joueur pose
+  -- ses propres tapis/bras. À priorité égale, la plus grande entité gagne le
+  -- survol → le bâtiment masquait ces entités et les rendait intouchables. En
+  -- passant à 40, toute entité posée dessus (prio 50 par défaut) reprend le
+  -- survol. La fonderie reste ouvrable par son corps ailleurs, par le
+  -- combinateur (prio 100) et par le raccourci CTRL+ALT+F.
+  selection_priority = 40,
   tile_width = 40,
   tile_height = 22,
   -- Snap sur la grille 2×2 des rails, pour que la rangée de voie tombe

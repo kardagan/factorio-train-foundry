@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.3.1
+Date: 2026-07-19
+  Bugfixes:
+    - Belts, inserters and other entities placed on the free apron area next to the foundry can now
+      be hovered, configured and removed again: the building no longer steals the mouse-over from
+      them. The foundry can still be opened from its body, from the circuit connector, and with the
+      Ctrl+Alt+F shortcut.
+---------------------------------------------------------------------------------------------------
 Version: 0.3.0
 Date: 2026-07-18
   Features:
