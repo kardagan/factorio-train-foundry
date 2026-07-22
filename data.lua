@@ -165,6 +165,7 @@ local HIDDEN_FLAGS = { "not-on-map", "not-blueprintable", "not-deconstructable",
 
 local function hide(proto)
   proto.hidden = true
+  proto.hidden_in_factoriopedia = true
   proto.minable = nil
   proto.selectable_in_game = false
   proto.next_upgrade = nil
@@ -225,6 +226,9 @@ input.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
                 "no-copy-paste", "player-creation" }
 input.inventory_size = 20
 input.circuit_wire_max_distance = 0
+-- Enfant de la fonderie (pas d'item/recette) : hors Factoriopedia, mais reste
+-- sélectionnable pour que le joueur puisse l'ouvrir.
+input.hidden_in_factoriopedia = true
 -- Priorité de sélection AU-DESSUS du bâtiment (dont la selection box couvre
 -- le parvis) : sinon survoler le coffre sélectionne le bâtiment.
 input.selection_priority = 100
@@ -263,6 +267,8 @@ bpchest.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
 bpchest.inventory_size = 50
 bpchest.inventory_type = "with_filters_and_bar"
 bpchest.circuit_wire_max_distance = 0
+-- Enfant de la fonderie (pas d'item/recette) : hors Factoriopedia, reste ouvrable.
+bpchest.hidden_in_factoriopedia = true
 bpchest.selection_priority = 100
 
 -- Bleu blueprint (clair, légèrement cyan). Appliqué à la vue en jeu.
@@ -291,6 +297,10 @@ combinator.fast_replaceable_group = nil
 combinator.flags = { "not-blueprintable", "not-deconstructable",
                      "not-upgradable", "no-copy-paste", "player-creation",
                      "hide-alt-info" }
+-- Pas craftable/posable directement (enfant de la fonderie) : on le retire de
+-- la Factoriopedia. On NE le masque pas via hidden/selectable : le joueur doit
+-- pouvoir le cliquer pour ouvrir la fonderie.
+combinator.hidden_in_factoriopedia = true
 -- Priorité de sélection au-dessus du bâtiment (comme le coffre).
 combinator.selection_priority = 100
 
