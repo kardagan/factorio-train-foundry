@@ -356,13 +356,26 @@ function builder.spawn(state, template, params)
       local interrupts = body.interrupts
 
       if not (records and #records > 0) then
+        -- Train piloté par groupe et/ou interruptions, sans itinéraire de
+        -- base (réseau logistique 2.0). On applique les interrupts et le
+        -- groupe, puis on passe en automatique : un tel train roule sans
+        -- aucun record — exiger des records ici le laisserait en manuel.
+        if interrupts and #interrupts > 0 then
+          pcall(function()
+            local ls = train.get_schedule()
+            for _, it in ipairs(interrupts) do
+              ls.add_interrupt(it)
+            end
+          end)
+        end
         if group and group ~= "" then
-          train.group = subst_station(group, params)
-          local s2 = train.schedule
-          if s2 and s2.records and #s2.records > 0 then
-            train.manual_mode = false
-            departed = true
-          end
+          pcall(function()
+            train.group = subst_station(group, params)
+          end)
+        end
+        if (group and group ~= "") or (interrupts and #interrupts > 0) then
+          train.manual_mode = false
+          departed = true
         end
         return
       end

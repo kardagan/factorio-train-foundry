@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.5.2
+Date: 2026-07-24
+  Bugfixes:
+    - Trains built from a blueprint with no base stops - driven only by a group and/or interrupts,
+      as in a logistic-network setup - now leave the foundry in automatic mode instead of manual,
+      and keep all their interrupts.
+---------------------------------------------------------------------------------------------------
 Version: 0.5.1
 Date: 2026-07-22
   Bugfixes:
