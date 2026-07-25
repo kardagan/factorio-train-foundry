@@ -130,54 +130,220 @@ local function grid_items(s)
   return out
 end
 
+-- ===========================================================================
+-- Carburant générique
+-- ---------------------------------------------------------------------------
+-- Le carburant du train n'est plus un item figé (ni celui du blueprint, ni un
+-- choix manuel) : on remplit chaque loco à plein avec le MEILLEUR carburant
+-- débloqué compatible présent dans la réserve. Une loco sans burner (ex. loco
+-- solaire) n'a aucun besoin de carburant.
+-- ===========================================================================
+
+-- Catégories de carburant acceptées par les LOCOMOTIVES du stock (set
+-- fuel_category -> true). Vide si aucune loco à burner (ex. loco solaire).
+local function compatible_fuel_categories(stock)
+  local cats = {}
+  for _, s in ipairs(stock or {}) do
+    local proto = prototypes.entity[s.name]
+    local burner = proto and proto.burner_prototype
+    if burner and burner.fuel_categories then
+      for cat in pairs(burner.fuel_categories) do cats[cat] = true end
+    end
+  end
+  return cats
+end
+builder.compatible_fuel_categories = compatible_fuel_categories
+
+-- Carburants DÉBLOQUÉS (une recette enabled de la force les produit) dont la
+-- catégorie est acceptée par les locos, triés par pouvoir calorifique décroissant
+-- (meilleur rendement d'abord). `cats` = set renvoyé par compatible_fuel_categories.
+local function unlocked_fuels(force, cats)
+  if not next(cats) then return {} end
+  -- Ensemble des items produits par une recette activée de la force.
+  local producible = {}
+  for _, recipe in pairs(force.recipes) do
+    if recipe.enabled then
+      for _, p in pairs(recipe.products) do
+        if p.type == "item" and p.name then producible[p.name] = true end
+      end
+    end
+  end
+  local out = {}
+  for name in pairs(producible) do
+    local it = prototypes.item[name]
+    if it and it.fuel_value and it.fuel_value > 0
+       and it.fuel_category and cats[it.fuel_category] then
+      out[#out + 1] = { name = name, fuel_value = it.fuel_value }
+    end
+  end
+  table.sort(out, function(a, b) return a.fuel_value > b.fuel_value end)
+  return out
+end
+builder.unlocked_fuels = unlocked_fuels
+
+-- Nombre de slots de carburant d'une loco (0 si pas de burner).
+local function loco_fuel_slots(loco_name)
+  local proto = prototypes.entity[loco_name]
+  if not (proto and proto.burner_prototype) then return 0 end
+  local n = proto.get_inventory_size(defines.inventory.fuel)
+  return n or 0
+end
+
+-- Quantité de `fuel` (item) nécessaire pour remplir À PLEIN toutes les locos du
+-- stock : Σ slots(loco) × stack_size(fuel).
+local function loco_fuel_capacity(stock, fuel)
+  local stack = prototypes.item[fuel] and prototypes.item[fuel].stack_size or 0
+  if stack <= 0 then return 0 end
+  local slots = 0
+  for _, s in ipairs(stock or {}) do
+    slots = slots + loco_fuel_slots(s.name)
+  end
+  return slots * stack
+end
+builder.loco_fuel_capacity = loco_fuel_capacity
+
 -- Items requis par le template : les véhicules eux-mêmes + tout ce que le
--- blueprint demande dedans (carburant si le train a été blueprinté avec le
--- plein, munitions...).
+-- blueprint demande dedans (munitions...) SAUF le carburant, désormais géré à
+-- part (volet fuel du besoin — voir compute_need).
 function builder.compute_need(template)
   local need = {}
+  local items = {}
   for _, s in ipairs(template.stock) do
     local item = place_item_for(s.name)
-    need[item] = (need[item] or 0) + 1
+    items[item] = (items[item] or 0) + 1
     for name, n in pairs(requested_items(s)) do
-      need[name] = (need[name] or 0) + n
+      -- Le CARBURANT des item-requests (ex. loco blueprintée avec du plein) est
+      -- ignoré : le carburant est géré par le volet fuel (meilleur carburant
+      -- débloqué dispo). On garde les autres requests (munitions...).
+      local it = prototypes.item[name]
+      if not (it and it.fuel_value and it.fuel_value > 0) then
+        items[name] = (items[name] or 0) + n
+      end
     end
-    -- Équipements de la grille : demandés/consommés comme le carburant.
+    -- Équipements de la grille : demandés/consommés comme les composants.
     for name, n in pairs(grid_items(s)) do
-      need[name] = (need[name] or 0) + n
+      items[name] = (items[name] or 0) + n
     end
+  end
+  need.items = items
+  -- Volet carburant : nil si aucune loco à burner (ex. loco solaire) ; sinon les
+  -- catégories acceptées + le stock (pour calculer le plein selon le carburant
+  -- finalement retenu dans missing/consume/spawn).
+  local cats = compatible_fuel_categories(template.stock)
+  if next(cats) then
+    need.fuel = { categories = cats, stock = template.stock }
   end
   return need
 end
 
--- Ce qui manque dans la réserve : map item -> quantité manquante, plus une
--- chaîne rich-text prête à afficher ("" si rien ne manque).
+-- Choisit le meilleur carburant débloqué compatible PRÉSENT en réserve en
+-- quantité suffisante pour remplir toutes les locos à plein. Retourne
+-- item_name, capacity (quantité pour le plein) ou nil si aucun ne convient.
+-- `candidates` peut être fourni (déjà trié) pour éviter de recalculer.
+local function pick_fuel(state, fuel_need)
+  local inv = shared_inventory(state)
+  if not inv then return nil end
+  local force = state.entity and state.entity.valid and state.entity.force
+  if not force then return nil end
+  local candidates = unlocked_fuels(force, fuel_need.categories)
+  for _, c in ipairs(candidates) do  -- meilleur fuel_value d'abord
+    local cap = loco_fuel_capacity(fuel_need.stock, c.name)
+    if cap > 0 and inv.get_item_count(c.name) >= cap then
+      return c.name, cap
+    end
+  end
+  return nil
+end
+builder.pick_fuel = pick_fuel
+
+-- Détail des carburants candidats pour l'affichage / le circuit : pour chaque
+-- carburant débloqué compatible, son plein (Σ slots×stack) et ce que la réserve
+-- en a. Trié par fuel_value décroissant. {} si pas de besoin carburant.
+function builder.fuel_candidates(state, need)
+  if not (need and need.fuel) then return {} end
+  local inv = shared_inventory(state)
+  local force = state.entity and state.entity.valid and state.entity.force
+  if not force then return {} end
+  local out = {}
+  for _, c in ipairs(unlocked_fuels(force, need.fuel.categories)) do
+    local full = loco_fuel_capacity(need.fuel.stock, c.name)
+    if full > 0 then
+      out[#out + 1] = {
+        name = c.name,
+        need = full,
+        have = inv and inv.get_item_count(c.name) or 0,
+      }
+    end
+  end
+  return out
+end
+
+-- Ce qui manque dans la réserve. Retourne :
+--   miss       : map item -> quantité manquante (composants)
+--   caption    : chaîne rich-text prête à afficher ("" si rien ne manque)
+--   fuel_item  : carburant retenu pour le plein (nil si pas de besoin carburant
+--                OU aucun carburant compatible débloqué dispo en quantité suffisante)
+--   fuel_short : true si un carburant EST requis mais aucun candidat ne convient
+-- Deux lignes dans la caption : composants, puis carburant (si manquant).
 function builder.missing(state, need)
   local inv = shared_inventory(state)
+  local items = need.items or need   -- compat : ancien need plat = les items
   local miss, parts = {}, {}
-  for item, n in pairs(need) do
+  for item, n in pairs(items) do
     local have = inv and inv.get_item_count(item) or 0
     if have < n then
       miss[item] = n - have
       parts[#parts + 1] = "[item=" .. item .. "]×" .. (n - have)
     end
   end
-  return miss, table.concat(parts, "  ")
+
+  local fuel_item, fuel_short, fuel_caption = nil, false, ""
+  if need.fuel then
+    fuel_item = pick_fuel(state, need.fuel)
+    if not fuel_item then
+      fuel_short = true
+      -- Besoin d'un carburant, aucun candidat dispo en réserve : liste des
+      -- carburants compatibles débloqués (rich-text) pour guider le joueur.
+      local force = state.entity and state.entity.valid and state.entity.force
+      local cands = force and unlocked_fuels(force, need.fuel.categories) or {}
+      local icons = {}
+      for _, c in ipairs(cands) do icons[#icons + 1] = "[item=" .. c.name .. "]" end
+      fuel_caption = (#icons > 0) and table.concat(icons, " / ") or "?"
+    end
+  end
+
+  return miss, table.concat(parts, "  "), fuel_item, fuel_short, fuel_caption
 end
 
-function builder.consume(state, need)
+-- Consomme les composants + le plein du carburant retenu (fuel_item, quantité
+-- calculée depuis le stock). fuel_item peut être nil (pas de besoin carburant).
+function builder.consume(state, need, fuel_item)
   local inv = shared_inventory(state)
   if not inv then return end
-  for item, n in pairs(need) do
+  local items = need.items or need
+  for item, n in pairs(items) do
     inv.remove({ name = item, count = n })
+  end
+  if fuel_item and need.fuel then
+    local cap = loco_fuel_capacity(need.fuel.stock, fuel_item)
+    if cap > 0 then inv.remove({ name = fuel_item, count = cap }) end
   end
 end
 
--- Rend les composants (annulation d'une construction en cours). Ce qui ne
--- rentre plus dans la réserve est déversé au sol.
-function builder.refund(state, need)
+-- Rend les composants + le carburant consommé (annulation). Ce qui ne rentre
+-- plus dans la réserve est déversé au sol. `fuel_item` = carburant consommé (nil
+-- si aucun).
+function builder.refund(state, need, fuel_item)
   local inv = shared_inventory(state)
   local e = state.entity
-  for item, n in pairs(need or {}) do
+  local items = need.items or need
+  local to_refund = {}
+  for item, n in pairs(items or {}) do to_refund[item] = n end
+  if fuel_item and need.fuel then
+    local cap = loco_fuel_capacity(need.fuel.stock, fuel_item)
+    if cap > 0 then to_refund[fuel_item] = (to_refund[fuel_item] or 0) + cap end
+  end
+  for item, n in pairs(to_refund) do
     local inserted = inv and inv.insert({ name = item, count = n }) or 0
     if inserted < n and e and e.valid then
       e.surface.spill_item_stack({
@@ -268,7 +434,10 @@ end
 -- consomme les composants (au caller de le faire) ; vérifie seulement que
 -- la pose des véhicules réussit. Retourne "spawn-ok-departed" /
 -- "spawn-ok-manual", ou nil, "clé-erreur".
-function builder.spawn(state, template, params)
+-- `fuel_item` (optionnel) = carburant retenu par missing/consume, DÉJÀ prélevé
+-- de la réserve ; on l'insère dans les locos jusqu'au plein. nil = pas de besoin
+-- carburant (loco solaire) ou repli sur ce qui traîne en réserve.
+function builder.spawn(state, template, params, fuel_item)
   local e = state.entity
   if not (e and e.valid) then return nil, "spawn-failed" end
   if #template.stock > builder.capacity(state) then
@@ -280,20 +449,39 @@ function builder.spawn(state, template, params)
   -- queue : la tête sort en premier. Mapping des orientations BP -> voie
   -- est-ouest : BP horizontal conservé tel quel, BP vertical tourné d'un
   -- quart (nord -> ouest).
+  --
+  -- Train STC (source_kind == "stc", loco en stock[1]) : l'orientation n'est PAS
+  -- figée par le template, on l'oriente selon le côté de SORTIE effectif, décidé
+  -- ICI (au spawn). Sortie droite SEULE (exit_right et pas exit_left) → on retourne
+  -- le train : loco côté est, tête à l'est, orientée est ; sinon (gauche, ou les
+  -- deux) → tête à l'ouest (comportement historique). Le mode BP garde ses propres
+  -- orientations, on ne touche pas.
+  local stc_right = (template.source_kind == "stc")
+    and (state.exit_right and not state.exit_left)
+  local count = #template.stock
+
   local spawned = {}
   for i, s in ipairs(template.stock) do
-    local o = s.orientation or (template.horizontal and 0.75 or 0)
-    local dir
-    if template.horizontal then
-      dir = (math.abs(o - 0.25) < 0.26) and defines.direction.east
-        or defines.direction.west
+    local dir, slot
+    if stc_right then
+      -- Ordre inversé : stock[1] (loco) part à l'est, la queue à l'ouest ; tous
+      -- orientés est (train tête à l'est).
+      slot = count - i          -- i=1 -> slot le plus à l'est
+      dir = defines.direction.east
     else
-      dir = (math.abs(o - 0.5) < 0.26) and defines.direction.east
-        or defines.direction.west
+      slot = i - 1              -- i=1 (tête) le plus à l'ouest
+      local o = s.orientation or (template.horizontal and 0.75 or 0)
+      if template.horizontal then
+        dir = (math.abs(o - 0.25) < 0.26) and defines.direction.east
+          or defines.direction.west
+      else
+        dir = (math.abs(o - 0.5) < 0.26) and defines.direction.east
+          or defines.direction.west
+      end
     end
     local v = e.surface.create_entity({
       name = s.name,
-      position = { e.position.x + HEAD_X + (i - 1) * SPACING,
+      position = { e.position.x + HEAD_X + slot * SPACING,
                    e.position.y + RAIL_Y },
       direction = dir,
       force = e.force,
@@ -311,31 +499,43 @@ function builder.spawn(state, template, params)
     spawned[#spawned + 1] = v
   end
 
-  -- Remplissage : les item requests du blueprint (carburant, munitions...)
-  -- ont déjà été consommés de la réserve avec les composants — on les
-  -- insère dans chaque véhicule (LuaEntity.insert choisit le bon
-  -- inventaire : fuel, munitions, soute). Pour un véhicule SANS requests,
-  -- repli : premier carburant compatible trouvé dans la réserve, une pile
-  -- par locomotive.
+  -- Remplissage. Deux volets :
+  --  1) Item-requests NON-carburant du blueprint (munitions d'artillerie…) :
+  --     déjà consommées de la réserve avec les composants, on les insère.
+  --  2) Carburant : on remplit chaque loco À PLEIN avec `fuel_item` (déjà prélevé
+  --     par consume). Repli si fuel_item nil : premier carburant compatible
+  --     trouvé dans la réserve (prélevé au passage) — sécurité, ne devrait servir
+  --     que pour un template legacy sans volet fuel.
   for i, v in ipairs(spawned) do
-    local reqs = requested_items(template.stock[i])
-    if next(reqs) then
-      for name, n in pairs(reqs) do
-        v.insert({ name = name, count = n })
+    for name, n in pairs(requested_items(template.stock[i])) do
+      local ip = prototypes.item[name]
+      if not (ip and ip.fuel_value and ip.fuel_value > 0) then
+        v.insert({ name = name, count = n })  -- munitions, etc. (pas le carburant)
       end
-    elseif v.type == "locomotive" and inv then
-      local bp = v.prototype.burner_prototype
+    end
+    if v.type == "locomotive" then
       local fi = v.get_fuel_inventory()
-      if bp and fi then
-        for _, it in pairs(inv.get_contents()) do
-          local ip = prototypes.item[it.name]
-          if ip and ip.fuel_category and bp.fuel_categories[ip.fuel_category] then
-            local count = math.min(it.count, ip.stack_size)
-            local inserted = fi.insert({ name = it.name, count = count })
-            if inserted > 0 then
-              inv.remove({ name = it.name, count = inserted })
+      if fi then
+        if fuel_item then
+          -- Plein avec le carburant retenu (déjà payé, on ne retouche pas la réserve).
+          local stack = prototypes.item[fuel_item] and prototypes.item[fuel_item].stack_size or 0
+          local slots = #fi
+          if stack > 0 and slots > 0 then
+            fi.insert({ name = fuel_item, count = stack * slots })
+          end
+        elseif inv then
+          -- Repli : premier carburant compatible dispo en réserve, une pile.
+          local bp = v.prototype.burner_prototype
+          if bp then
+            for _, it in pairs(inv.get_contents()) do
+              local ip = prototypes.item[it.name]
+              if ip and ip.fuel_category and bp.fuel_categories[ip.fuel_category] then
+                local count = math.min(it.count, ip.stack_size)
+                local inserted = fi.insert({ name = it.name, count = count })
+                if inserted > 0 then inv.remove({ name = it.name, count = inserted }) end
+                break
+              end
             end
-            break
           end
         end
       end
@@ -465,6 +665,15 @@ function builder.update_circuit(state)
     if state.work and state.work.phase == "waiting" and state.work.need then
       local miss = builder.missing(state, state.work.need)
       for item, n in pairs(miss) do acc[item] = (acc[item] or 0) + n end
+      -- Carburant : on demande le PLEIN pour CHAQUE carburant candidat, pour
+      -- qu'au moins un arrive par la logistique. Dès qu'un carburant satisfait le
+      -- plein (have >= need), la prod part et ce bloc n'est plus atteint. On
+      -- n'ajoute la demande que pour les carburants pas encore au plein.
+      for _, f in ipairs(builder.fuel_candidates(state, state.work.need)) do
+        if f.have < f.need then
+          acc[f.name] = (acc[f.name] or 0) + (f.need - f.have)
+        end
+      end
     end
   end
 
@@ -487,14 +696,14 @@ function builder.try_spawn(state, template, params)
     return nil, "spawn-too-long"
   end
   local need = builder.compute_need(template)
-  local miss, miss_str = builder.missing(state, need)
-  if next(miss) then return nil, "spawn-missing", miss_str end
+  local miss, miss_str, fuel_item, fuel_short = builder.missing(state, need)
+  if next(miss) or fuel_short then return nil, "spawn-missing", miss_str end
   if not builder.track_free(state) then return nil, "spawn-track-occupied" end
   if not builder.exit_open(state) then return nil, "spawn-exit-blocked" end
-  builder.consume(state, need)
-  local ok, err = builder.spawn(state, template, params)
+  builder.consume(state, need, fuel_item)
+  local ok, err = builder.spawn(state, template, params, fuel_item)
   if not ok then
-    builder.refund(state, need)
+    builder.refund(state, need, fuel_item)
     return nil, err
   end
   return ok

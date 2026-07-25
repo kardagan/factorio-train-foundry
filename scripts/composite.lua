@@ -198,6 +198,11 @@ function composite.build(entity)
     -- posée par lay_rails). Droite (est) opt-in via la fenêtre → open_east.
     exit_left = true,
     exit_right = false,
+    -- Source des trains : "bp" (livre de plans, défaut) ou "stc" (modèles lus
+    -- chez Smart Train Combinator via remote.call). Le mode "stc" n'est proposé
+    -- que si le mod est présent. (Le carburant des trains STC n'est plus un choix :
+    -- builder remplit avec le meilleur carburant débloqué dispo au spawn.)
+    source_mode = "bp",
   }
 
   -- Voie interne du master : -13..+17 (impairs), zone d'assemblage. Le raccord

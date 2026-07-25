@@ -224,7 +224,7 @@ input.next_upgrade = nil
 input.fast_replaceable_group = nil
 input.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
                 "no-copy-paste", "player-creation" }
-input.inventory_size = 20
+input.inventory_size = 100
 input.circuit_wire_max_distance = 0
 -- Enfant de la fonderie (pas d'item/recette) : hors Factoriopedia, mais reste
 -- sélectionnable pour que le joueur puisse l'ouvrir.

@@ -12,10 +12,15 @@
 -- rafraîchies par la boucle de production.
 
 local blueprint = require("scripts.blueprint")
+local builder = require("scripts.builder")
 
 local gui = {}
 
 local WINDOW = "tf-window"
+-- Hauteur figée du corps de la fenêtre principale : la colonne droite (file +
+-- en-cours + réserve) la remplit exactement, la colonne gauche (liste des plans)
+-- s'étire pour la même hauteur (scroll interne au-delà).
+local WINDOW_BODY_HEIGHT = 695
 -- Fenêtre FLOTTANTE de gestion du coffre à blueprints (ouverte au clic sur le
 -- coffre). Flottante = B (bibliothèque) ne la ferme pas → on peut prendre un
 -- plan en main et le déposer. Fermeture par la croix.
@@ -68,6 +73,17 @@ function gui.set_emit_mode(player, mode)
   end
 end
 
+-- Exclusivité des radios de source (BP/STC). Même principe que set_emit_mode.
+function gui.set_source_mode(player, mode)
+  local w = player.gui.screen["tf-circuit-window"]
+  local inner = w and w.valid and w["tf-circuit-inner"]
+  if not inner then return end
+  for _, name in ipairs({ "bp", "stc" }) do
+    local rb = inner["tf-source-" .. name]
+    if rb and rb.valid then rb.state = (name == mode) end
+  end
+end
+
 -- L'unit_number de la fonderie liée à la fenêtre ouverte de ce joueur.
 function gui.window_unit_number(player)
   local w = player.gui.screen[WINDOW]
@@ -104,10 +120,19 @@ local function bp_wide_tile(parent, sigs, args)
   })
   button.style.size = { w, h }
 
-  local bg = box.add({ type = "sprite", sprite = "item/blueprint" })
+  -- Fond bleu "blueprint" — en mode plain (ex. modèles STC : ce ne sont pas des
+  -- plans), on remplace l'image bleue par un widget vide de MÊME géométrie, pour
+  -- que la rangée d'icônes garde le même décalage : seul le visuel bleu disparaît,
+  -- pas la mise en page.
+  local bg
+  if args and args.plain then
+    bg = box.add({ type = "empty-widget" })
+  else
+    bg = box.add({ type = "sprite", sprite = "item/blueprint" })
+    bg.style.stretch_image_to_widget_size = true
+  end
   bg.ignored_by_interaction = true
   bg.style.size = { w - 8, h - 8 }
-  bg.style.stretch_image_to_widget_size = true
   bg.style.top_margin = 4 - h
   bg.style.left_margin = 4
 
@@ -167,6 +192,91 @@ local function bp_square_tile(parent, sigs, args)
   return box
 end
 
+-- Chemin de sprite d'un type de matériel roulant (entité), avec repli si le
+-- prototype n'a pas de sprite direct (rare). nil si rien de valide.
+local function rolling_stock_sprite(entity_name)
+  local path = "entity/" .. entity_name
+  if helpers.is_valid_sprite_path(path) then return path end
+  -- repli : l'item de placement, s'il existe
+  local proto = prototypes.entity[entity_name]
+  local place = proto and proto.items_to_place_this
+  if place and place[1] and place[1].name then
+    local ip = "item/" .. place[1].name
+    if helpers.is_valid_sprite_path(ip) then return ip end
+  end
+  return nil
+end
+
+-- Mode STC : la source des trains est la liste des « formes » (modèles) que
+-- Smart Train Combinator expose pour la surface, via remote.call. Une tuile par
+-- forme distincte ; le clic met en file en demandant d'abord la ressource. Les
+-- modèles sont mis en cache dans state.stc_models pour être relus au clic.
+function gui.refresh_stc_models(player, state, list)
+  state.stc_models = nil
+  if not remote.interfaces["smart-train-combinator"] then
+    local hint = list.add({ type = "label", caption = { "tf-gui.stc-absent" } })
+    hint.style.single_line = false
+    hint.style.maximal_width = 340
+    return
+  end
+
+  local models = remote.call("smart-train-combinator", "get_models",
+    state.entity.surface.index) or {}
+  state.stc_models = models
+
+  if #models == 0 then
+    local hint = list.add({ type = "label", caption = { "tf-gui.stc-empty" } })
+    hint.style.single_line = false
+    hint.style.maximal_width = 340
+    return
+  end
+
+  for i, m in ipairs(models) do
+    -- Garde défensive : un modèle sans type de wagon n'est pas affichable.
+    local nw = m.wagons or 1
+    if m.wagon_type then
+    local row = list.add({ type = "flow", direction = "horizontal" })
+    row.style.vertical_align = "center"
+    row.style.bottom_margin = 6
+
+    -- Icônes de la tuile : le(s) wagon(s) et, le cas échéant, le marqueur storage.
+    local sigs = {}
+    local wsprite = rolling_stock_sprite(m.wagon_type)
+    if wsprite then
+      for _ = 1, math.min(3, nw) do sigs[#sigs + 1] = wsprite end
+    end
+    if m.storage and helpers.is_valid_sprite_path("virtual-signal/stc2-storage") then
+      sigs[#sigs + 1] = "virtual-signal/stc2-storage"
+    end
+
+    local kind_lbl = (m.kind == "fluid") and { "tf-gui.stc-fluid" } or { "tf-gui.stc-solid" }
+    local storage_suffix = m.storage and { "tf-gui.stc-storage-suffix" } or ""
+    local tip = { "tf-gui.stc-model-tip", kind_lbl, nw, storage_suffix }
+
+    bp_wide_tile(row, sigs, {
+      tooltip = tip,
+      plain = true,  -- pas de fond bleu blueprint : ce ne sont pas des BP
+      tags = { tf_action = "stc-model", index = i },
+    })
+
+    local info = row.add({ type = "flow", direction = "vertical" })
+    info.style.left_margin = 8
+    info.style.horizontally_stretchable = true
+    info.style.vertical_align = "center"
+    local name = info.add({
+      type = "label",
+      caption = { "tf-gui.stc-model-name", kind_lbl, nw, storage_suffix },
+    })
+    name.style.font = "default-semibold"
+    local sub = info.add({
+      type = "label",
+      caption = "[entity=" .. m.wagon_type .. "] × " .. nw,
+    })
+    sub.style.font_color = { 0.8, 0.8, 0.8 }
+    end  -- if m.wagon_type
+  end
+end
+
 -- Livre de plans : reflet EN DIRECT du coffre à blueprints. Une ligne par
 -- plan déposé — icône + nom (clic gauche : mise en file). Un plan non conforme
 -- (autre qu'un train, trop long, pas sur voie droite) apparaît en rouge, non
@@ -180,6 +290,13 @@ function gui.refresh_templates(player, state)
     return
   end
   list.clear()
+
+  -- Mode STC : la source n'est plus le coffre de plans mais les modèles lus chez
+  -- Smart Train Combinator. Rendu et clic distincts (voir refresh_stc_models).
+  if state.source_mode == "stc" then
+    gui.refresh_stc_models(player, state, list)
+    return
+  end
 
   -- L'accès au coffre à plans est le petit « + » de l'en-tête (voir gui.open) ;
   -- pas de ligne dédiée ici.
@@ -373,7 +490,10 @@ function gui.refresh_work(player, state)
   -- maquette) : « 4/4 » vert avec ✓, « 1/4 » rouge s'il en manque.
   local comps = flow.add({ type = "flow", direction = "horizontal" })
   comps.style.horizontal_spacing = 4
-  for item, n in pairs(work.need or {}) do
+  -- need.items = composants (map item->count). Compat : un ancien need plat reste
+  -- itérable tel quel.
+  local need_items = (work.need and work.need.items) or work.need or {}
+  for item, n in pairs(need_items) do
     local miss = work.phase == "waiting" and work.missing
       and work.missing[item] or 0
     local have = math.max(0, n - miss)
@@ -384,7 +504,8 @@ function gui.refresh_work(player, state)
       type = "sprite-button",
       style = (miss > 0) and "tf_slot_missing" or "tf_slot_ok",
       sprite = "item/" .. item,
-      ignored_by_interaction = true,
+      tooltip = prototypes.item[item] and prototypes.item[item].localised_name or item,
+      tags = { tf_ipedia = item },  -- clic → Factoriopedia
     })
     local ratio = col.add({
       type = "label",
@@ -395,9 +516,43 @@ function gui.refresh_work(player, state)
     ratio.style.top_margin = 1
   end
 
-  -- État sous les composants : uniquement l'attente de voie (le manque de
-  -- composants est déjà lisible sur les slots rouges).
-  if (work.phase == "waiting" and not (work.missing and next(work.missing)))
+  -- Ligne carburant : un slot par carburant candidat (débloqué compatible), avec
+  -- ratio dispo/plein. Vert si CE carburant satisfait le plein à lui seul, rouge
+  -- sinon. Affichée dès qu'il y a un besoin carburant (need.fuel) — un seul
+  -- carburant plein suffit à lancer la prod (les autres restent rouges, normal).
+  local fuel_cands = (work.phase == "waiting")
+    and builder.fuel_candidates(state, work.need) or {}
+  if #fuel_cands > 0 then
+    local flabel = flow.add({ type = "label", caption = { "tf-gui.fuel-title" } })
+    flabel.style.font = "default-small-semibold"
+    flabel.style.top_margin = 4
+    local frow = flow.add({ type = "flow", direction = "horizontal" })
+    frow.style.horizontal_spacing = 4
+    for _, f in ipairs(fuel_cands) do
+      local ok = f.have >= f.need
+      local col = frow.add({ type = "flow", direction = "vertical" })
+      col.style.vertical_align = "center"
+      col.style.horizontal_align = "center"
+      col.add({
+        type = "sprite-button",
+        style = ok and "tf_slot_ok" or "tf_slot_missing",
+        sprite = "item/" .. f.name,
+        tooltip = prototypes.item[f.name] and prototypes.item[f.name].localised_name or f.name,
+        tags = { tf_ipedia = f.name },  -- clic → Factoriopedia
+      })
+      local ratio = col.add({
+        type = "label",
+        caption = math.min(f.have, f.need) .. "/" .. f.need,
+      })
+      ratio.style.font = "default-small-semibold"
+      ratio.style.font_color = ok and { 0.5, 1, 0.5 } or { 1, 0.4, 0.4 }
+      ratio.style.top_margin = 1
+    end
+  end
+
+  -- État sous les composants : attente de voie (les manques composants/carburant
+  -- sont déjà lisibles sur les slots).
+  if (work.phase == "waiting" and not work.blocked)
     or work.phase == "ready" then
     flow.add({ type = "label", caption = { "tf-gui.work-ready" } })
   end
@@ -418,11 +573,14 @@ function gui.refresh_stock(player, state)
     and state.input.get_inventory(defines.inventory.chest)
   if not inv then return end
 
-  -- Affiche les 20 cases RÉELLES de l'inventaire (vides comprises), 10 par
-  -- ligne. Lecture seule : le remplissage se fait aux bras (inserters sur
+  -- Affiche les cases RÉELLES de l'inventaire (vides comprises), 10 par ligne,
+  -- scroll au-delà. Lecture seule : le remplissage se fait aux bras (inserters sur
   -- n'importe quel bord du bâtiment).
   local table_el = grid.add({ type = "table", column_count = 10,
                               style = "slot_table" })
+  -- Réserve la gouttière de la barre de scroll verticale : sinon la dernière
+  -- colonne de slots passe SOUS la scrollbar (100 slots → scroll actif).
+  table_el.style.right_margin = 12
   for i = 1, #inv do
     local stack = inv[i]
     if stack.valid_for_read then
@@ -540,15 +698,20 @@ function gui.open(player, state)
     type = "scroll-pane", name = "tf-templates-scroll",
     horizontal_scroll_policy = "never",
   })
-  tscroll.style.height = 470
+  -- Hauteur FIXE de la fenêtre : la colonne gauche (liste des plans) s'étire pour
+  -- remplir toute la hauteur de la colonne droite (WINDOW_BODY_HEIGHT), quel que
+  -- soit le nombre de plans (scroll interne au-delà).
+  tscroll.style.height = WINDOW_BODY_HEIGHT
   tscroll.style.horizontally_stretchable = true
   tscroll.add({ type = "flow", name = "tf-templates", direction = "vertical" })
 
-  -- Colonne droite : file, en cours, réserve.
+  -- Colonne droite : file, en cours, réserve. Hauteur figée = référence pour la
+  -- colonne gauche.
   local right = body.add({
     type = "flow", name = "tf-right", direction = "vertical",
   })
-  right.style.width = 430
+  right.style.width = 448  -- de la place pour la gouttière de scroll de la réserve
+  right.style.height = WINDOW_BODY_HEIGHT
 
   local qframe = right.add({
     type = "frame",
@@ -593,7 +756,9 @@ function gui.open(player, state)
   local wflow = wframe.add({
     type = "flow", name = "tf-work", direction = "vertical",
   })
-  wflow.style.height = 130
+  -- Hauteur fixe : de quoi contenir la barre + rangée composants + rangée de slots
+  -- carburant (« Fuel (any one) », avec ses ratios) sans tasser, taille stable.
+  wflow.style.height = 235
 
   local sframe = right.add({
     type = "frame",
@@ -692,6 +857,30 @@ function gui.toggle_circuit(player, state)
     direction = "vertical",
   })
   inner.style.width = 240
+
+  -- Source des trains : BP (livre de plans) ou STC (modèles Smart Train
+  -- Combinator). Proposé uniquement si le mod STC expose son interface.
+  if remote.interfaces["smart-train-combinator"] then
+    inner.add({
+      type = "label",
+      caption = { "tf-gui.source-title" },
+      style = "caption_label",
+    })
+    local src = state.source_mode or "bp"
+    for _, m in ipairs({ { "bp", "tf-gui.source-bp" },
+                         { "stc", "tf-gui.source-stc" } }) do
+      inner.add({
+        type = "radiobutton",
+        name = "tf-source-" .. m[1],
+        caption = { m[2] },
+        state = (src == m[1]),
+        tags = { tf_source_mode = m[1] },
+      })
+    end
+    -- (Le carburant n'est plus choisi ici : les trains générés sont remplis avec
+    -- le meilleur carburant débloqué compatible disponible dans la réserve.)
+  end
+
   inner.add({
     type = "label",
     caption = { "tf-gui.emit-title" },
@@ -734,7 +923,10 @@ end
 -- Dialogue des paramètres d'un blueprint paramétré (à la mise en file)
 -- ---------------------------------------------------------------------------
 
-function gui.open_params(player, state, index, template)
+-- `stc_index` (optionnel) : quand il est fourni, le dialogue est pour un modèle
+-- STC (state.stc_models[stc_index]) et non un plan du coffre ; la validation
+-- reconstruira le template synthétique au lieu de le relire dans st.templates.
+function gui.open_params(player, state, index, template, stc_index)
   local old = player.gui.screen["tf-params"]
   if old then old.destroy() end
   local frame = player.gui.screen.add({
@@ -749,6 +941,7 @@ function gui.open_params(player, state, index, template)
       unit_number = state.entity.unit_number,
       index = index,
       signature = template.signature,
+      stc_index = stc_index,
     },
   })
   local rows = frame.add({
@@ -799,7 +992,7 @@ function gui.collect_params(player)
     end
   end
   return params, frame.tags.unit_number, frame.tags.index,
-    frame.tags.signature
+    frame.tags.signature, frame.tags.stc_index
 end
 
 -- ---------------------------------------------------------------------------

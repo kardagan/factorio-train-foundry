@@ -18,6 +18,7 @@ local composite = require("scripts.composite")
 local blueprint = require("scripts.blueprint")
 local builder = require("scripts.builder")
 local gui = require("scripts.gui")
+local stc_template = require("scripts.stc_template")
 
 local MAIN = "train-foundry"
 
@@ -104,6 +105,9 @@ local function migrate_all()
       st.templates = st.templates or {}
       st.queue = st.queue or {}
       st.extensions = st.extensions or {}
+      -- Source des trains (ajouté en 0.6.0). Le carburant des trains STC n'est
+      -- plus un réglage (st.stc_fuel devient inerte, laissé tel quel).
+      st.source_mode = st.source_mode or "bp"
       -- Répare les signaux détachés (mauvaise direction dans les vieilles
       -- versions : ils clignotaient sans gouverner le bloc).
       composite.repair_signal(st)
@@ -307,9 +311,9 @@ local function on_removed(event)
     return
   end
 
-  -- Rend les composants d'une construction en cours avant le nettoyage.
+  -- Rend les composants (+ carburant) d'une construction en cours avant le nettoyage.
   if st.work and st.work.phase ~= "waiting" and st.work.need then
-    builder.refund(st, st.work.need)
+    builder.refund(st, st.work.need, st.work.fuel_item)
   end
 
   -- Le master disparaît alors qu'il a des extensions (mort par biters,
@@ -474,17 +478,21 @@ local function process_foundry(st)
   local template = work.entry.template
 
   if work.phase == "waiting" then
-    -- Attente des composants (et d'une voie libre pour poser le châssis).
+    -- Attente des composants + carburant (et d'une voie libre pour le châssis).
     work.need = work.need or builder.compute_need(template)
-    local miss = builder.missing(st, work.need)
+    local miss, _, fuel_item, fuel_short, fuel_caption = builder.missing(st, work.need)
     work.missing = miss
+    work.fuel_item = fuel_item        -- carburant retenu (nil si aucun/pas de besoin)
+    work.fuel_caption = fuel_caption  -- rich-text des carburants acceptés (si manquant)
     if next(miss) then
       work.blocked = "components"
+    elseif fuel_short then
+      work.blocked = "fuel"
     elseif not builder.track_free(st) then
       work.blocked = "track"
     else
       work.blocked = nil
-      builder.consume(st, work.need)
+      builder.consume(st, work.need, work.fuel_item)
       work.phase = "building"
       work.progress = 0
       work.total_ticks = #template.stock * builder.TICKS_PER_VEHICLE
@@ -499,11 +507,11 @@ local function process_foundry(st)
     -- Sortie : voie interne libre (le train précédent est parti) et bloc
     -- de sortie ouvert.
     if builder.track_free(st) and builder.exit_open(st) then
-      local ok = builder.spawn(st, template, work.entry.params)
+      local ok = builder.spawn(st, template, work.entry.params, work.fuel_item)
       if not ok then
-        -- Échec dur de la pose : on rend les composants plutôt que de
-        -- bloquer la file.
-        builder.refund(st, work.need)
+        -- Échec dur de la pose (voie obstruée...) : on rend les composants + le
+        -- carburant consommé plutôt que de bloquer la file.
+        builder.refund(st, work.need, work.fuel_item)
       end
       st.work = nil
     end
@@ -752,6 +760,14 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
     return
   end
 
+  -- Source des trains BP/STC (radios exclusifs) : bascule le livre affiché.
+  if el.tags.tf_source_mode then
+    st.source_mode = el.tags.tf_source_mode
+    gui.set_source_mode(player, st.source_mode)
+    gui.refresh_templates(player, st)
+    return
+  end
+
   -- Côtés de sortie (cases indépendantes). On interdit de fermer les DEUX côtés
   -- (le train n'aurait plus de sortie) : la dernière case cochée se re-coche.
   if el.tags.tf_exit_side then
@@ -783,6 +799,16 @@ script.on_event(defines.events.on_gui_click, function(event)
   if not (el and el.valid) then return end
   local player = game.get_player(event.player_index)
   if not player then return end
+
+  -- Slot d'ingrédient/carburant : clic → Factoriopedia de l'item (le tooltip
+  -- affiche déjà son nom). Protégé (API 2.1 ; item pouvant avoir disparu).
+  if el.tags and el.tags.tf_ipedia then
+    local item = prototypes.item[el.tags.tf_ipedia]
+    if item and player.open_factoriopedia_gui then
+      pcall(function() player.open_factoriopedia_gui(item) end)
+    end
+    return
+  end
 
   if el.name == "tf-close" then
     gui.close(player)
@@ -860,21 +886,29 @@ script.on_event(defines.events.on_gui_click, function(event)
   end
   if el.name == "tf-params-go" then
     ensure_storage()
-    local params, p_un, p_index, p_sig = gui.collect_params(player)
+    local params, p_un, p_index, p_sig, p_stc = gui.collect_params(player)
     local frame = player.gui.screen["tf-params"]
     if frame then frame.destroy() end
     if not params then return end
     local p_st = storage.foundries[p_un]
     if not p_st then return end
-    -- Résolution par SIGNATURE d'abord (le livre a pu se réindexer depuis
-    -- l'ouverture du dialogue), repli sur l'index.
     local t
-    if p_sig then
-      for _, cand in ipairs(p_st.templates) do
-        if cand.signature == p_sig then t = cand break end
+    if p_stc then
+      -- Modèle STC : on reconstruit le template synthétique depuis la forme mise
+      -- en cache (state.stc_models) au dernier rafraîchissement du livre.
+      local m = p_st.stc_models and p_st.stc_models[p_stc]
+      if not m then return end
+      t = stc_template.build(m)
+    else
+      -- Blueprint : résolution par SIGNATURE d'abord (le livre a pu se réindexer
+      -- depuis l'ouverture du dialogue), repli sur l'index.
+      if p_sig then
+        for _, cand in ipairs(p_st.templates) do
+          if cand.signature == p_sig then t = cand break end
+        end
       end
+      t = t or p_st.templates[p_index]
     end
-    t = t or p_st.templates[p_index]
     if not t or t.invalid then return end
     enqueue(p_st, t, params)
     gui.refresh_queue(player, p_st)
@@ -902,13 +936,21 @@ script.on_event(defines.events.on_gui_click, function(event)
     end
     enqueue(st, t, nil)
     gui.refresh_queue(player, st)
+  elseif el.tags and el.tags.tf_action == "stc-model" then
+    -- Modèle STC : on construit le template synthétique et on demande la
+    -- ressource (toujours paramétré via parameter-0). La forme sera relue à la
+    -- validation depuis st.stc_models pour reconstruire le template.
+    local m = st.stc_models and st.stc_models[el.tags.index]
+    if not m then return end
+    local t = stc_template.build(m)
+    gui.open_params(player, st, el.tags.index, t, el.tags.index)
   elseif el.tags and el.tags.tf_action == "cancel-queued" then
     table.remove(st.queue, el.tags.index)
     gui.refresh_queue(player, st)
   elseif el.tags and el.tags.tf_action == "cancel-work" then
     if st.work then
       if st.work.phase ~= "waiting" and st.work.need then
-        builder.refund(st, st.work.need)
+        builder.refund(st, st.work.need, st.work.fuel_item)
       end
       st.work = nil
       gui.refresh_dynamic(player, st)

@@ -1,4 +1,27 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.6.0
+Date: 2026-07-24
+  Features:
+    - New "Smart Train Combinator" train source (when that mod is installed). In the Configuration
+      window, a Train source selector switches the plan book between Blueprints (default) and the
+      train models exposed by Smart Train Combinator on the surface. Pick a model, choose its
+      resource, and the foundry builds the train with a matching schedule (loading stop plus refuel,
+      stop and unload interrupts) and group - no blueprint required. Handles solid and fluid trains,
+      any wagon count, and the storage variant, matching the combinator's station-name convention.
+    - Trains built from a Smart Train Combinator model get their group name and every interrupt
+      name prefixed with the Train Foundry icon (and coloured: white refuel, orange stop, red
+      unload), so foundry-built trains and their interrupts are easy to spot in the train UI.
+    - Generic fuelling. The fuel of a built train is no longer fixed (nor taken from the blueprint):
+      the foundry fills every locomotive to the top with the best unlocked fuel available in the
+      buffer, and production only starts once one compatible unlocked fuel is present in a quantity
+      sufficient to fully fuel all locomotives. A solar (burner-less) locomotive needs no fuel and
+      gets no refuel interrupt. The refuel interrupt now lists every fuel the locomotive can burn
+      (trigger at 10% of full for each) and refills to fuel_full. The "In progress" panel shows a
+      fuel row (one slot per accepted fuel, with amount/full), and the circuit "read requests" mode
+      requests a full load of every candidate fuel so at least one is delivered.
+    - The component and fuel slots now show the item name on hover and open Factoriopedia on click.
+    - Component buffer enlarged from 20 to 100 stacks.
+---------------------------------------------------------------------------------------------------
 Version: 0.5.2
 Date: 2026-07-24
   Bugfixes:
