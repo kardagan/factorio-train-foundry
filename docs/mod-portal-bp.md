@@ -61,6 +61,18 @@ whole hall.
 
 ![Chained foundries for longer trains](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/extensions.png)
 
+### Fuel
+
+By default the train is fuelled exactly like the blueprint says — whatever fuel
+the blueprint puts in the locomotives is what the foundry loads. Nothing to set up.
+
+For a blueprint that has **no fuel** in it, or when you'd rather not tie a plan to
+one specific fuel, tick **Generic fuel** in the Configuration window: the foundry
+then fills every locomotive with the **best unlocked fuel available in its stock**
+and adds a refuel interrupt covering every fuel the locomotive can burn (top up at
+10%, leave once full). A solar (burner-less) locomotive needs no fuel at all. A
+blueprint with no fuel always uses this generic mode — nothing to honour.
+
 ### Extras
 
 - **Circuit network.** Wire the foundry's connector and, in the Configuration
