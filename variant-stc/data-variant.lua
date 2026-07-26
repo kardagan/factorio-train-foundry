@@ -1,0 +1,9 @@
+-- Train Foundry STC (variante STC) — prototypes SPÉCIFIQUES à la variante STC.
+--
+-- La variante STC n'a PAS de coffre à blueprints : elle ne définit donc aucun
+-- prototype de data stage en propre. Le bâtiment, l'item, la recette, la techno
+-- et les enfants communs (rails, réserve, signal, combinateur) sont dans
+-- common/data-common.lua, paramétrés par names.lua (noms tfstc-*).
+--
+-- Fichier volontairement vide (présent pour la symétrie du build : chaque
+-- variante fournit un data-variant.lua).

@@ -14,16 +14,26 @@
 -- proportionnelle au nombre de véhicules) -> attente de voie/sortie libre ->
 -- spawn du train -> entrée suivante.
 
+local names = require("names")
 local composite = require("scripts.composite")
-local blueprint = require("scripts.blueprint")
+local blueprint = names.has_bpchest and require("scripts.blueprint") or nil
 local builder = require("scripts.builder")
 local gui = require("scripts.gui")
-local stc_template = require("scripts.stc_template")
+local stc_template = (names.source == "stc") and require("scripts.stc_template") or nil
 
-local MAIN = "train-foundry"
+local MAIN = names.building
 
 -- La boucle tourne toutes les 30 ticks (0,5 s).
 local TICK_INTERVAL = 30
+
+-- Le carburant est-il géré en mode GÉNÉRIQUE (meilleur carburant débloqué dispo +
+-- interruption Refuel) pour cette fonderie ? Toujours en variante STC (pas de
+-- carburant blueprinté à respecter). En variante BP : selon l'option par fonderie
+-- state.generic_fuel (défaut false = respecter le carburant du blueprint, 0.5.x).
+local function fuel_is_generic(st)
+  if names.source == "stc" then return true end
+  return st.generic_fuel and true or false
+end
 
 -- ----------------------------------------------------------------------------
 -- Storage : init lazy idempotente, appelée en tête de chaque handler
@@ -94,6 +104,9 @@ local function migrate_all()
     -- Côtés de sortie (ajoutés avec la sortie est). Vieille save = gauche seule.
     if st.exit_left == nil then st.exit_left = true end
     if st.exit_right == nil then st.exit_right = false end
+    -- Carburant générique (0.7.x) : défaut false = comportement 0.5.x (respecte
+    -- le carburant du blueprint), pour ne pas surprendre une save existante.
+    if st.generic_fuel == nil then st.generic_fuel = false end
     if not (st.entity and st.entity.valid) then
       composite.destroy(st)
       storage.foundries[un] = nil
@@ -105,9 +118,9 @@ local function migrate_all()
       st.templates = st.templates or {}
       st.queue = st.queue or {}
       st.extensions = st.extensions or {}
-      -- Source des trains (ajouté en 0.6.0). Le carburant des trains STC n'est
-      -- plus un réglage (st.stc_fuel devient inerte, laissé tel quel).
-      st.source_mode = st.source_mode or "bp"
+      -- Champ st.source_mode supprimé (chaque variante est mono-source) ; on le
+      -- purge des vieilles saves. st.stc_fuel reste inerte, laissé tel quel.
+      st.source_mode = nil
       -- Répare les signaux détachés (mauvaise direction dans les vieilles
       -- versions : ils clignotaient sans gouverner le bloc).
       composite.repair_signal(st)
@@ -116,7 +129,7 @@ local function migrate_all()
       -- PLACE, sans que le joueur ait à miner puis reposer la fonderie.
       composite.ensure_input(st)
       composite.ensure_combinator(st)
-      composite.ensure_bpchest(st)
+      if names.has_bpchest then composite.ensure_bpchest(st) end
       -- Raccord ouest en RAIL_OVER (écrase le mur) : les vieilles fonderies
       -- l'avaient en rail normal. On le reconstruit au bon calque si la sortie
       -- gauche est ouverte ; sinon on s'assure qu'il est bien retiré.
@@ -156,10 +169,12 @@ local function migrate_all()
     for _, c in ipairs(st.inputs or {}) do ref(c) end
     for _, c in ipairs(st.combinators or {}) do ref(c) end
   end
+  local child_names = { names.rail, names.rail_over, names.input, names.signal,
+                        names.combinator }
+  if names.has_bpchest then child_names[#child_names + 1] = names.bpchest end
   for _, surface in pairs(game.surfaces) do
     for _, ent in pairs(surface.find_entities_filtered({
-      name = { "tf-rail", "tf-rail-over", "tf-input", "tf-signal",
-               "tf-combinator", "tf-blueprints" } })) do
+      name = child_names })) do
       local key = ent.name .. ":" .. ent.position.x .. ":" .. ent.position.y
       if not referenced[key] then
         ent.destroy()
@@ -478,8 +493,16 @@ local function process_foundry(st)
   local template = work.entry.template
 
   if work.phase == "waiting" then
+    -- Générique si le mode l'exige (STC / case cochée) OU si le BP n'a AUCUN
+    -- carburant (rien à respecter → on remplit au meilleur carburant dispo). On le
+    -- FIGE sur le travail (comme need/fuel_item) : recalculer à chaque tick ferait
+    -- diverger consume (waiting) et spawn (ready) si le joueur bascule l'option en
+    -- cours de construction → carburant perdu ou dupliqué.
+    if work.generic == nil then
+      work.generic = fuel_is_generic(st) or not builder.template_has_bp_fuel(template)
+    end
     -- Attente des composants + carburant (et d'une voie libre pour le châssis).
-    work.need = work.need or builder.compute_need(template)
+    work.need = work.need or builder.compute_need(template, work.generic)
     local miss, _, fuel_item, fuel_short, fuel_caption = builder.missing(st, work.need)
     work.missing = miss
     work.fuel_item = fuel_item        -- carburant retenu (nil si aucun/pas de besoin)
@@ -507,7 +530,7 @@ local function process_foundry(st)
     -- Sortie : voie interne libre (le train précédent est parti) et bloc
     -- de sortie ouvert.
     if builder.track_free(st) and builder.exit_open(st) then
-      local ok = builder.spawn(st, template, work.entry.params, work.fuel_item)
+      local ok = builder.spawn(st, template, work.entry.params, work.fuel_item, work.generic)
       if not ok then
         -- Échec dur de la pose (voie obstruée...) : on rend les composants + le
         -- carburant consommé plutôt que de bloquer la file.
@@ -526,7 +549,7 @@ script.on_nth_tick(TICK_INTERVAL, function()
   local book_changed = {}
   for un, st in pairs(storage.foundries) do
     if st.role ~= "extension" and st.entity and st.entity.valid then
-      book_changed[un] = sync_templates(st)
+      if names.has_bpchest then book_changed[un] = sync_templates(st) end
       process_foundry(st)
       builder.update_circuit(st)
     end
@@ -548,13 +571,15 @@ script.on_nth_tick(TICK_INTERVAL, function()
     end
     -- Fenêtre coffre à blueprints (indépendante) : la resynchroniser si son
     -- coffre a changé (dépôt/retrait aux bras pendant qu'elle est ouverte).
-    local bp_un = gui.bp_window_unit_number(player)
-    if bp_un then
-      local st = storage.foundries[bp_un]
-      if st and st.bpchest and st.bpchest.valid then
-        if book_changed[bp_un] then gui.refresh_bp(player, st) end
-      else
-        gui.close_bp(player)
+    if names.has_bpchest then
+      local bp_un = gui.bp_window_unit_number(player)
+      if bp_un then
+        local st = storage.foundries[bp_un]
+        if st and st.bpchest and st.bpchest.valid then
+          if book_changed[bp_un] then gui.refresh_bp(player, st) end
+        else
+          gui.close_bp(player)
+        end
       end
     end
   end
@@ -662,7 +687,7 @@ script.on_event(defines.events.on_gui_opened, function(event)
   --  - coffre à blueprints → fenêtre FLOTTANTE dédiée (B ne la ferme pas, on
   --    peut y déposer un plan) ; on neutralise sa GUI vanilla ;
   --  - coffre de réserve → GUI vanilla conservée (dépôt de composants).
-  if e.name == "tf-blueprints" then
+  if names.has_bpchest and e.name == names.bpchest then
     for _, s in pairs(storage.foundries) do
       if s.bpchest == e then
         gui.open_bp(player, s)
@@ -679,7 +704,7 @@ script.on_event(defines.events.on_gui_opened, function(event)
     -- Clic sur une EXTENSION → on ouvre la fenêtre de son MAÎTRE (transparent
     -- pour le joueur : toute la chaîne se pilote depuis une seule fenêtre).
     st = master_of(storage.foundries[e.unit_number])
-  elseif e.name == "tf-combinator" then
+  elseif e.name == names.combinator then
     for _, s in pairs(storage.foundries) do
       if s.combinator == e then st = s break end
     end
@@ -687,7 +712,7 @@ script.on_event(defines.events.on_gui_opened, function(event)
   if not st then return end
   -- Lit le coffre à blueprints avant d'afficher le livre (à jour dès
   -- l'ouverture, sans attendre le prochain tick de la boucle).
-  sync_templates(st)
+  if names.has_bpchest then sync_templates(st) end
   -- gui.open pose lui-même player.opened = frame (fenêtre classique) : NE PAS
   -- remettre player.opened = nil ensuite, ça fermerait notre fenêtre.
   gui.open(player, st)
@@ -702,7 +727,7 @@ local function open_overview(player)
   for _, st in pairs(storage.foundries) do
     if st.role ~= "extension" and st.entity and st.entity.valid
       and st.entity.surface == surface then
-      sync_templates(st)
+      if names.has_bpchest then sync_templates(st) end
       gui.open(player, st)
       return
     end
@@ -711,12 +736,12 @@ local function open_overview(player)
 end
 
 script.on_event(defines.events.on_lua_shortcut, function(event)
-  if event.prototype_name ~= "tf-open-overview" then return end
+  if event.prototype_name ~= names.shortcut then return end
   local player = game.get_player(event.player_index)
   if player then open_overview(player) end
 end)
 
-script.on_event("tf-open-overview", function(event)
+script.on_event(names.shortcut, function(event)
   local player = game.get_player(event.player_index)
   if player then open_overview(player) end
 end)
@@ -760,11 +785,18 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
     return
   end
 
-  -- Source des trains BP/STC (radios exclusifs) : bascule le livre affiché.
-  if el.tags.tf_source_mode then
-    st.source_mode = el.tags.tf_source_mode
-    gui.set_source_mode(player, st.source_mode)
-    gui.refresh_templates(player, st)
+  -- Carburant générique (variante BP) : bascule le mode de carburant. Un travail
+  -- déjà en attente recalcule son besoin au prochain tick (work.need est reconstruit
+  -- si on le remet à nil).
+  if el.tags.tf_generic_fuel then
+    st.generic_fuel = el.state and true or false
+    -- Un travail EN ATTENTE recalcule mode + besoin au prochain tick (on invalide
+    -- work.generic ET work.need). Un travail déjà en construction garde son mode
+    -- figé (changer en cours fausserait le comptage carburant).
+    if st.work and st.work.phase == "waiting" then
+      st.work.generic = nil
+      st.work.need = nil
+    end
     return
   end
 
@@ -815,7 +847,7 @@ script.on_event(defines.events.on_gui_click, function(event)
     return
   end
 
-  if el.name == "tf-bp-close" then
+  if names.has_bpchest and el.name == "tf-bp-close" then
     gui.close_bp(player)
     return
   end
@@ -833,7 +865,7 @@ script.on_event(defines.events.on_gui_click, function(event)
   end
 
   -- « + » du livre : ferme la fenêtre principale et ouvre le coffre à plans.
-  if el.name == "tf-open-bpchest" then
+  if names.has_bpchest and el.name == "tf-open-bpchest" then
     local un = gui.window_unit_number(player)
     local st = un and storage.foundries[un]
     if st and st.bpchest and st.bpchest.valid then
@@ -846,7 +878,7 @@ script.on_event(defines.events.on_gui_click, function(event)
   -- Slot de la fenêtre coffre à blueprints : dépose (plan en main) ou reprend
   -- (slot plein). Clic GUI pur — aucun risque de « stamper » le blueprint sur
   -- le monde, contrairement à un clic-monde.
-  if el.tags and el.tags.tf_action == "bp-slot" then
+  if names.has_bpchest and el.tags and el.tags.tf_action == "bp-slot" then
     local un = gui.bp_window_unit_number(player)
     ensure_storage()
     local st = un and storage.foundries[un]
@@ -880,20 +912,20 @@ script.on_event(defines.events.on_gui_click, function(event)
   end
 
   if el.name == "tf-params-cancel" then
-    local frame = player.gui.screen["tf-params"]
+    local frame = player.gui.screen[gui.PARAMS_WINDOW]
     if frame then frame.destroy() end
     return
   end
   if el.name == "tf-params-go" then
     ensure_storage()
     local params, p_un, p_index, p_sig, p_stc = gui.collect_params(player)
-    local frame = player.gui.screen["tf-params"]
+    local frame = player.gui.screen[gui.PARAMS_WINDOW]
     if frame then frame.destroy() end
     if not params then return end
     local p_st = storage.foundries[p_un]
     if not p_st then return end
     local t
-    if p_stc then
+    if p_stc and names.source == "stc" and stc_template then
       -- Modèle STC : on reconstruit le template synthétique depuis la forme mise
       -- en cache (state.stc_models) au dernier rafraîchissement du livre.
       local m = p_st.stc_models and p_st.stc_models[p_stc]
@@ -924,7 +956,7 @@ script.on_event(defines.events.on_gui_click, function(event)
     return
   end
 
-  if el.tags and el.tags.tf_action == "template-slot" then
+  if names.has_bpchest and el.tags and el.tags.tf_action == "template-slot" then
     -- Le livre reflète le coffre à blueprints ; on ne supprime pas d'ici (on
     -- retire le BP du coffre). Clic = mise en file (paramètres demandés si le
     -- BP en a). Un plan invalide n'a pas de tag d'action, on n'arrive pas ici.
@@ -936,14 +968,16 @@ script.on_event(defines.events.on_gui_click, function(event)
     end
     enqueue(st, t, nil)
     gui.refresh_queue(player, st)
-  elseif el.tags and el.tags.tf_action == "stc-model" then
+  elseif names.source == "stc" and stc_template
+      and el.tags and el.tags.tf_action == "stc-model" then
     -- Modèle STC : on construit le template synthétique et on demande la
     -- ressource (toujours paramétré via parameter-0). La forme sera relue à la
     -- validation depuis st.stc_models pour reconstruire le template.
     local m = st.stc_models and st.stc_models[el.tags.index]
     if not m then return end
     local t = stc_template.build(m)
-    gui.open_params(player, st, el.tags.index, t, el.tags.index)
+    -- On connaît le kind (item/fluid) → picker de ressource restreint à ce type.
+    gui.open_params(player, st, el.tags.index, t, el.tags.index, m.kind)
   elseif el.tags and el.tags.tf_action == "cancel-queued" then
     table.remove(st.queue, el.tags.index)
     gui.refresh_queue(player, st)
@@ -955,6 +989,10 @@ script.on_event(defines.events.on_gui_click, function(event)
       st.work = nil
       gui.refresh_dynamic(player, st)
     end
+  elseif el.tags and el.tags.tf_action == "clear-track" then
+    -- Détruit + rembourse le train coincé sur la voie interne (débloque la prod).
+    local n = builder.clear_track(st)
+    if n > 0 then gui.refresh_dynamic(player, st) end
   end
 end)
 
@@ -963,34 +1001,7 @@ end)
 -- d'autres mods). Mêmes chemins de code que la GUI.
 -- ----------------------------------------------------------------------------
 
-remote.add_interface("train-foundry", {
-  -- Dépose `stack` (LuaItemStack blueprint) dans le coffre à blueprints de la
-  -- fonderie et resynchronise les templates. Retourne "ok:<nb véhicules>",
-  -- "invalid:<clé>" si le plan est refusé, ou une clé d'erreur.
-  import_blueprint = function(stack, unit_number)
-    ensure_storage()
-    local st = storage.foundries[unit_number]
-    if not st then return "import-no-foundry" end
-    local chest = composite.bp_chest(st)
-    if not chest then return "import-no-foundry" end
-    local inv = chest.get_inventory(defines.inventory.chest)
-    if not (inv and inv.insert(stack) > 0) then return "import-not-blueprint" end
-    sync_templates(st)
-    local last = st.templates[#st.templates]
-    if not last then return "import-not-blueprint" end
-    if last.invalid then return "invalid:" .. last.invalid end
-    return "ok:" .. #last.stock
-  end,
-  -- Construction immédiate (contourne la file) — tests/regression.
-  spawn_template = function(unit_number, index)
-    ensure_storage()
-    local st = storage.foundries[unit_number]
-    if not st then return "import-no-foundry" end
-    local t = st.templates[index]
-    if not t then return "import-no-foundry" end
-    local ok, err, detail = builder.try_spawn(st, t)
-    return (ok or err) .. (detail and (" | " .. detail) or "")
-  end,
+local remote_iface = {
   -- Met un template en file d'attente.
   enqueue_template = function(unit_number, index)
     ensure_storage()
@@ -1010,8 +1021,39 @@ remote.add_interface("train-foundry", {
     return string.format("queue=%d work=%s progress=%.2f",
       #st.queue, w and w.phase or "-", w and w.progress or 0)
   end,
+}
+
+if names.has_bpchest then
+  -- Dépose `stack` (LuaItemStack blueprint) dans le coffre à blueprints de la
+  -- fonderie et resynchronise les templates. Retourne "ok:<nb véhicules>",
+  -- "invalid:<clé>" si le plan est refusé, ou une clé d'erreur.
+  remote_iface.import_blueprint = function(stack, unit_number)
+    ensure_storage()
+    local st = storage.foundries[unit_number]
+    if not st then return "import-no-foundry" end
+    local chest = composite.bp_chest(st)
+    if not chest then return "import-no-foundry" end
+    local inv = chest.get_inventory(defines.inventory.chest)
+    if not (inv and inv.insert(stack) > 0) then return "import-not-blueprint" end
+    sync_templates(st)
+    local last = st.templates[#st.templates]
+    if not last then return "import-not-blueprint" end
+    if last.invalid then return "invalid:" .. last.invalid end
+    return "ok:" .. #last.stock
+  end
+  -- Construction immédiate (contourne la file) — tests/regression.
+  remote_iface.spawn_template = function(unit_number, index)
+    ensure_storage()
+    local st = storage.foundries[unit_number]
+    if not st then return "import-no-foundry" end
+    local t = st.templates[index]
+    if not t then return "import-no-foundry" end
+    local ok, err, detail = builder.try_spawn(st, t,
+      fuel_is_generic(st) or not builder.template_has_bp_fuel(t))
+    return (ok or err) .. (detail and (" | " .. detail) or "")
+  end
   -- Résumé des templates d'une fonderie ("Train 1(6), Train 2(3)").
-  templates = function(unit_number)
+  remote_iface.templates = function(unit_number)
     ensure_storage()
     local st = storage.foundries[unit_number]
     if not st then return "import-no-foundry" end
@@ -1020,15 +1062,17 @@ remote.add_interface("train-foundry", {
       out[#out + 1] = t.name .. "(" .. #t.stock .. ")"
     end
     return table.concat(out, ", ")
-  end,
-})
+  end
+end
+
+remote.add_interface(names.remote, remote_iface)
 
 -- ----------------------------------------------------------------------------
 -- Diagnostic : /tf-scan liste tous les rails et véhicules autour de la voie
 -- de la fonderie survolée (positions, directions, orientations).
 -- ----------------------------------------------------------------------------
 
-commands.add_command("tf-scan", "Scanne la voie de la fonderie survolée", function(cmd)
+commands.add_command(names.mod .. "-scan", "Scanne la voie de la fonderie survolée", function(cmd)
   ensure_storage()
   local player = game.get_player(cmd.player_index)
   if not player then return end
@@ -1062,7 +1106,7 @@ end)
 -- les achievements, contrairement à /c).
 -- ----------------------------------------------------------------------------
 
-commands.add_command("tf-debug", "État de la Train Foundry survolée", function(cmd)
+commands.add_command(names.mod .. "-debug", "État de la Train Foundry survolée", function(cmd)
   ensure_storage()
   local player = game.get_player(cmd.player_index)
   if not player then return end

@@ -21,18 +21,21 @@
 -- condition native `fuel_full`. Omise pour une loco sans burner (ex. loco solaire).
 -- ===========================================================================
 
+local names = require("names")
+
 local stc_template = {}
 
 -- Préfixe TF collé devant le nom de groupe ET chaque nom d'interruption, pour
 -- repérer d'un coup d'œil les trains/interruptions issus d'une fonderie. On
--- privilégie l'icône de l'entité train-foundry ; repli sur l'item, puis rien
--- (un sprite rich-text invalide ne planterait qu'à l'AFFICHAGE, on l'évite).
+-- privilégie l'icône de l'entité (names.building) ; repli sur l'item de même nom,
+-- puis rien (un sprite rich-text invalide ne planterait qu'à l'AFFICHAGE).
 -- Calculé une fois, mémoïsé (les prototypes ne changent pas en cours de partie).
 local tf_prefix_cache = nil
 local function tf_prefix()
   if tf_prefix_cache ~= nil then return tf_prefix_cache end
-  for _, tag in ipairs({ "[entity=train-foundry]", "[item=train-foundry]" }) do
-    local path = tag:sub(2, -2):gsub("=", "/")  -- "entity/train-foundry"
+  for _, tag in ipairs({ "[entity=" .. names.building .. "]",
+                         "[item=" .. names.building .. "]" }) do
+    local path = tag:sub(2, -2):gsub("=", "/")  -- "entity/<building>"
     if helpers.is_valid_sprite_path(path) then
       tf_prefix_cache = tag
       return tag
@@ -94,19 +97,34 @@ local function compatible_fuels(loco_type)
   return out
 end
 
--- Répète le tag d'icône wagon N fois. On passe par [item=<place-item>] quand il
--- existe (forme que le sélecteur rich-text insère et que STC utilise pour ses
--- noms de gares) et [entity=...] en repli.
+-- Item de placement d'un wagon — MÊME logique que STC (wagon_item_name) pour que
+-- le tag soit BYTE-IDENTIQUE à ce que STC met dans ses noms de gares (matching
+-- des interruptions). En 2.0 le champ est items_to_place_this[1].item (PAS .name).
+local function wagon_item_name(proto, entity_name)
+  local place = proto.items_to_place_this
+  if place and place[1] and place[1].item then return place[1].item end
+  local mp = proto.mineable_properties
+  if mp and mp.products then
+    for _, p in ipairs(mp.products) do
+      if p.type == "item" and p.name then return p.name end
+    end
+  end
+  if prototypes.item[entity_name] then return entity_name end
+  return nil
+end
+
+-- Run d'icône wagon dans le nom : jusqu'à 5 icônes répétées (format HISTORIQUE de
+-- STC, inchangé → compat des gares/interruptions existantes préservée), au-delà
+-- "icône×N" (compact, sinon le nom dépasse la limite ~200 car et est tronqué
+-- mid-tag). MÊME règle et MÊME seuil que STC wagon_run. [item=<place-item>], repli
+-- [entity=]. wagon_item_name = même résolution que STC (champ .item en 2.0).
+local WAGON_ICON_MAX = 5
 local function wagon_run(wagon_type, n)
   local proto = prototypes.entity[wagon_type]
-  local place = proto and proto.items_to_place_this
-  local tag
-  if place and place[1] and place[1].name then
-    tag = "[item=" .. place[1].name .. "]"
-  else
-    tag = "[entity=" .. wagon_type .. "]"
-  end
-  return string.rep(tag, n)
+  local item = proto and wagon_item_name(proto, wagon_type)
+  local tag = item and ("[item=" .. item .. "]") or ("[entity=" .. wagon_type .. "]")
+  if n <= WAGON_ICON_MAX then return string.rep(tag, n) end
+  return tag .. "×" .. n
 end
 
 -- Libellé du kind pour le nom de l'interruption de déchargement (anglais, pour
@@ -151,9 +169,10 @@ function stc_template.build(model)
   -- Nom de GROUPE : il DOIT encoder la forme, pas seulement la ressource — sinon
   -- deux trains de même ressource mais de formes différentes tombent dans le même
   -- groupe et leurs interruptions (rattachées au groupe en 2.0) se mélangent.
-  -- On répète l'icône ressource N fois (un picto par wagon) et on inclut le
-  -- segment storage : chaque (ressource, N, storage) a son propre groupe.
-  local group_name = prefix .. group .. string.rep("[item=parameter-0]", n)
+  -- Ressource + "×N" (compact, comme le nom de gare — évite le débordement de
+  -- longueur sur les trains longs) + segment storage : chaque (ressource, N,
+  -- storage) a son propre groupe.
+  local group_name = prefix .. group .. "[item=parameter-0]×" .. n
 
   local unload_name = prefix .. unload_icon() .. "[color=red]unload " .. kind_label(model.kind)
     .. (model.storage and " storage" or "") .. " " .. n .. "[/color]"
@@ -189,9 +208,13 @@ function stc_template.build(model)
       conditions = conds,
       targets = {
         { station = "[virtual-signal=signal-fuel]",
+          -- fuel_full ET inactivity (AND, pas OR) : chez Nullius la loco reçoit des
+          -- sous-produits à décharger sans qu'on sache quand c'est fini ; en OR,
+          -- l'inactivité seule ferait repartir le train AVANT le plein. On exige
+          -- donc le plein ET une pause d'inactivité.
           wait_conditions = {
             { type = "fuel_full", compare_type = "and" },
-            { type = "inactivity", compare_type = "or", ticks = 300 },
+            { type = "inactivity", compare_type = "and", ticks = 300 },
           } },
       },
       inside_interrupt = true,

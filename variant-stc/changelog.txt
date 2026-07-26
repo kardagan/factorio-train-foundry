@@ -1,0 +1,30 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.1.0
+Date: 2026-07-25
+  Info:
+    - First release. A large train foundry that builds complete trains from Smart Train Combinator
+      models — a companion to Train Foundry (the blueprint version). Requires Smart Train Combinator.
+  Features:
+    - The foundry lists the distinct train shapes exposed by the Smart Train Combinator combinators
+      on the surface (kind, wagon type, wagon count, storage variant). Pick a shape, choose its
+      resource, and the train is assembled and sent off onto your network on its own, with a matching
+      schedule — a loading stop plus refuel, stop and unload interrupts — and a train group encoding
+      the shape. No blueprint needed. Handles solid and fluid trains, any wagon count, and the
+      storage variant; the station names match the combinator's own naming convention so the
+      interrupts line up. Group and interrupt names carry the foundry icon and are colour-coded
+      (white refuel, orange stop, red unload).
+    - Generic fuelling: the foundry fills every locomotive with the best unlocked compatible fuel
+      available in the buffer, and production only starts once one such fuel is present in a full
+      load. The refuel interrupt lists every fuel the locomotive can burn (trigger at 10% of full)
+      and refills to fuel_full. A solar (burner-less) locomotive needs no fuel and gets no refuel
+      interrupt. The "In progress" panel shows a fuel row (one slot per accepted fuel), and the
+      circuit "read requests" mode requests a full load of every candidate fuel so at least one is
+      delivered.
+    - The resource picker is restricted to the model's type (item or fluid). Component and fuel
+      slots show the item name on hover and open Factoriopedia on click.
+    - Internal stock feeds the builds; feed it by hand or with inserters. Circuit connector broadcasts
+      the stock or the missing components. Optional right-side (east) exit, chainable extensions for
+      longer trains, and a "clear stuck train" button (destroys + refunds a train that cannot leave).
+    - Shortcut-bar button (and CTRL+ALT+F) opens the foundry's window from anywhere. One foundry per
+      planet. Coexists with Train Foundry (the blueprint version) — one of each per surface.
+    - Vanilla, Space Age and Nullius compatible.

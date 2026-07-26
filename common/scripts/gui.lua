@@ -11,20 +11,35 @@
 -- blueprints. Les sections dynamiques (livre, file, en cours, réserve) sont
 -- rafraîchies par la boucle de production.
 
-local blueprint = require("scripts.blueprint")
+local names = require("names")
+local blueprint = names.has_bpchest and require("scripts.blueprint") or nil
 local builder = require("scripts.builder")
 
 local gui = {}
 
-local WINDOW = "tf-window"
+-- Les fenêtres TOP-LEVEL vivent dans player.gui.screen, PARTAGÉ entre tous les
+-- mods : deux mods qui nommeraient leur fenêtre "tf-window" entreraient en
+-- collision dans le même écran (symptôme : la fenêtre s'ouvre puis se referme
+-- aussitôt, chaque mod détruisant/écrasant celle de l'autre). On PRÉFIXE donc
+-- chaque nom de fenêtre top-level par la variante (names.mod, unique). Les
+-- éléments ENFANTS (tf-body, tf-left...) vivent dans le sous-arbre du frame,
+-- propre à chaque mod → pas besoin de les préfixer.
+local P = names.mod .. "-"           -- ex "train-foundry-" / "train-foundry-stc-"
+local WINDOW = P .. "window"
 -- Hauteur figée du corps de la fenêtre principale : la colonne droite (file +
 -- en-cours + réserve) la remplit exactement, la colonne gauche (liste des plans)
 -- s'étire pour la même hauteur (scroll interne au-delà).
-local WINDOW_BODY_HEIGHT = 695
--- Fenêtre FLOTTANTE de gestion du coffre à blueprints (ouverte au clic sur le
--- coffre). Flottante = B (bibliothèque) ne la ferme pas → on peut prendre un
--- plan en main et le déposer. Fermeture par la croix.
-local BP_WINDOW = "tf-bp-window"
+local WINDOW_BODY_HEIGHT = 785
+-- Largeurs des deux colonnes (utilisées à la fois par gui.open pour dimensionner
+-- et par reposition_circuit pour coller la fenêtre Config à droite — une seule
+-- source de vérité, sinon la fenêtre déportée se replace mal après un resize).
+local LEFT_WIDTH  = 420
+local RIGHT_WIDTH = 448
+-- Fenêtre FLOTTANTE de gestion du coffre à blueprints.
+local BP_WINDOW = P .. "bp-window"
+-- Fenêtres déportées (circuit) et dialogue paramètres : top-level → préfixées.
+local CIRCUIT_WINDOW = P .. "circuit-window"
+local PARAMS_WINDOW = P .. "params"
 
 local RICH_SPRITE = {
   item = "item", fluid = "fluid", virtual = "virtual-signal",
@@ -49,9 +64,9 @@ end
 function gui.close(player)
   local w = player.gui.screen[WINDOW]
   if w then w.destroy() end
-  local p = player.gui.screen["tf-params"]
+  local p = player.gui.screen[PARAMS_WINDOW]
   if p then p.destroy() end
-  local c = player.gui.screen["tf-circuit-window"]
+  local c = player.gui.screen[CIRCUIT_WINDOW]
   if c then c.destroy() end
 end
 
@@ -64,22 +79,11 @@ end
 -- Applique l'exclusivité des radios d'émission (le moteur ne le fait pas
 -- pour des radiobuttons indépendants) : coche celui du mode, décoche l'autre.
 function gui.set_emit_mode(player, mode)
-  local w = player.gui.screen["tf-circuit-window"]
+  local w = player.gui.screen[CIRCUIT_WINDOW]
   local inner = w and w.valid and w["tf-circuit-inner"]
   if not inner then return end
   for _, name in ipairs({ "stock", "request" }) do
     local rb = inner["tf-emit-" .. name]
-    if rb and rb.valid then rb.state = (name == mode) end
-  end
-end
-
--- Exclusivité des radios de source (BP/STC). Même principe que set_emit_mode.
-function gui.set_source_mode(player, mode)
-  local w = player.gui.screen["tf-circuit-window"]
-  local inner = w and w.valid and w["tf-circuit-inner"]
-  if not inner then return end
-  for _, name in ipairs({ "bp", "stc" }) do
-    local rb = inner["tf-source-" .. name]
     if rb and rb.valid then rb.state = (name == mode) end
   end
 end
@@ -101,10 +105,11 @@ local ICON_SZ = 32
 local ICON_GAP = 4
 local TILE_PAD = 10
 
+local TILE_ICONS = 5   -- largeur FIXE en icônes (loco + wagon + 2 chiffres + storage)
 local function bp_wide_tile(parent, sigs, args)
-  -- Largeur FIXE (4 icônes) pour que les titres restent alignés d'une ligne
-  -- à l'autre, quel que soit le nombre d'icônes du plan.
-  local w = TILE_PAD * 2 + 4 * ICON_SZ + 3 * ICON_GAP
+  -- Largeur FIXE (TILE_ICONS icônes) pour que les titres restent alignés d'une
+  -- ligne à l'autre, quel que soit le nombre d'icônes.
+  local w = TILE_PAD * 2 + TILE_ICONS * ICON_SZ + (TILE_ICONS - 1) * ICON_GAP
   local h = TILE_PAD * 2 + ICON_SZ
   local box = parent.add({ type = "flow", direction = "vertical" })
   box.style.width = w
@@ -197,14 +202,40 @@ end
 local function rolling_stock_sprite(entity_name)
   local path = "entity/" .. entity_name
   if helpers.is_valid_sprite_path(path) then return path end
-  -- repli : l'item de placement, s'il existe
+  -- repli : l'item de placement, s'il existe (en 2.0 le champ est .item, pas .name).
   local proto = prototypes.entity[entity_name]
   local place = proto and proto.items_to_place_this
-  if place and place[1] and place[1].name then
-    local ip = "item/" .. place[1].name
+  local item = place and place[1] and place[1].item
+  if item then
+    local ip = "item/" .. item
     if helpers.is_valid_sprite_path(ip) then return ip end
   end
   return nil
+end
+
+-- Locomotive déduite d'un type de wagon (même heuristique que stc_template :
+-- cargo/fluid-wagon → locomotive, repli 1ʳᵉ locomotive du jeu). Sert à afficher
+-- l'icône loco sur la tuile du modèle.
+local function loco_of(wagon_type)
+  local cand = (wagon_type or ""):gsub("cargo%-wagon", "locomotive")
+                                 :gsub("fluid%-wagon", "locomotive")
+  local proto = prototypes.entity[cand]
+  if proto and proto.type == "locomotive" then return cand end
+  for name, p in pairs(prototypes.entity) do
+    if p.type == "locomotive" then return name end
+  end
+  return cand
+end
+
+-- Nombre N rendu en signaux-chiffres [virtual-signal=signal-D] (un par chiffre).
+-- Ex. 8 → { signal-8 } ; 12 → { signal-1, signal-2 }. Chemins validés.
+local function digit_sprites(n)
+  local out = {}
+  for d in tostring(math.max(0, n)):gmatch("%d") do
+    local p = "virtual-signal/signal-" .. d
+    if helpers.is_valid_sprite_path(p) then out[#out + 1] = p end
+  end
+  return out
 end
 
 -- Mode STC : la source des trains est la liste des « formes » (modèles) que
@@ -239,12 +270,15 @@ function gui.refresh_stc_models(player, state, list)
     row.style.vertical_align = "center"
     row.style.bottom_margin = 6
 
-    -- Icônes de la tuile : le(s) wagon(s) et, le cas échéant, le marqueur storage.
+    -- Icônes de la tuile : loco + 1 wagon + le nombre N en signaux-chiffres
+    -- (signal-0..9, un par chiffre) + le marqueur storage. Une seule icône wagon
+    -- (le compte est porté par les chiffres), donc lisible quel que soit N.
     local sigs = {}
+    local lsprite = rolling_stock_sprite(loco_of(m.wagon_type))
+    if lsprite then sigs[#sigs + 1] = lsprite end
     local wsprite = rolling_stock_sprite(m.wagon_type)
-    if wsprite then
-      for _ = 1, math.min(3, nw) do sigs[#sigs + 1] = wsprite end
-    end
+    if wsprite then sigs[#sigs + 1] = wsprite end
+    for _, d in ipairs(digit_sprites(nw)) do sigs[#sigs + 1] = d end
     if m.storage and helpers.is_valid_sprite_path("virtual-signal/stc2-storage") then
       sigs[#sigs + 1] = "virtual-signal/stc2-storage"
     end
@@ -293,7 +327,8 @@ function gui.refresh_templates(player, state)
 
   -- Mode STC : la source n'est plus le coffre de plans mais les modèles lus chez
   -- Smart Train Combinator. Rendu et clic distincts (voir refresh_stc_models).
-  if state.source_mode == "stc" then
+  -- La variante est mono-source : names.source tranche une fois pour toutes.
+  if names.source == "stc" then
     gui.refresh_stc_models(player, state, list)
     return
   end
@@ -448,7 +483,24 @@ function gui.refresh_work(player, state)
   flow.clear()
   local work = state.work
   if not work then
-    flow.add({ type = "label", caption = { "tf-gui.work-idle" } })
+    -- Aucune construction en cours. Si un train est coincé sur la voie interne
+    -- (ne part pas : sortie bloquée, no-path), proposer un bouton pour le nettoyer
+    -- (le détruire + rembourser). Sinon simple label au repos.
+    if not builder.track_free(state) then
+      local row = flow.add({ type = "flow", direction = "horizontal" })
+      row.style.vertical_align = "center"
+      local lbl = row.add({ type = "label", caption = { "tf-gui.track-stuck" } })
+      lbl.style.horizontally_stretchable = true
+      row.add({
+        type = "sprite-button",
+        style = "tool_button_red",
+        sprite = "utility/trash",
+        tooltip = { "tf-gui.clear-track" },
+        tags = { tf_action = "clear-track" },
+      })
+    else
+      flow.add({ type = "label", caption = { "tf-gui.work-idle" } })
+    end
     return
   end
   -- 1) Titre + poubelle.
@@ -634,7 +686,7 @@ function gui.open(player, state)
   local titlebar = frame.add({ type = "flow", direction = "horizontal" })
   titlebar.add({
     type = "label",
-    caption = { "entity-name.train-foundry" },
+    caption = { "entity-name." .. names.building },
     style = "frame_title",
     ignored_by_interaction = true,
   })
@@ -669,7 +721,7 @@ function gui.open(player, state)
     direction = "vertical",
   })
   -- Vue liste : 4 slots de 40 + titre + scrollbar.
-  left.style.width = 380
+  left.style.width = LEFT_WIDTH
   -- En-tête : titre à gauche + petit « + » collé au bord DROIT (ouvre le
   -- coffre à plans). Un empty-widget extensible entre les deux pousse le
   -- bouton contre le bord droit (technique des titlebars — plus fiable qu'un
@@ -679,19 +731,24 @@ function gui.open(player, state)
   lhead.style.horizontally_stretchable = true
   lhead.add({
     type = "label",
-    caption = { "tf-gui.templates-title" },
+    -- Titre de la colonne gauche : « Blueprints » (variante BP) ou « Modèles de
+    -- train » (variante STC — pas de blueprint ici).
+    caption = { names.source == "stc" and "tf-gui.stc-list-title" or "tf-gui.templates-title" },
     style = "caption_label",
   })
   local spacer = lhead.add({ type = "empty-widget" })
   spacer.style.horizontally_stretchable = true
-  local addbtn = lhead.add({
-    type = "sprite-button",
-    name = "tf-open-bpchest",
-    style = "tool_button",
-    sprite = "utility/add",
-    tooltip = { "tf-gui.open-bpchest" },
-  })
-  addbtn.style.size = 24
+  -- Le « + » n'ouvre le coffre à plans que dans la variante qui en a un (BP).
+  if names.has_bpchest then
+    local addbtn = lhead.add({
+      type = "sprite-button",
+      name = "tf-open-bpchest",
+      style = "tool_button",
+      sprite = "utility/add",
+      tooltip = { "tf-gui.open-bpchest" },
+    })
+    addbtn.style.size = 24
+  end
   lhead.style.bottom_margin = 8  -- espace entre l'en-tête et la liste des plans
   -- Hauteur FIXE : la fenêtre ne grandit pas avec le nombre de plans.
   local tscroll = left.add({
@@ -710,7 +767,7 @@ function gui.open(player, state)
   local right = body.add({
     type = "flow", name = "tf-right", direction = "vertical",
   })
-  right.style.width = 448  -- de la place pour la gouttière de scroll de la réserve
+  right.style.width = RIGHT_WIDTH  -- + gouttière de scroll de la réserve
   right.style.height = WINDOW_BODY_HEIGHT
 
   local qframe = right.add({
@@ -778,7 +835,7 @@ function gui.open(player, state)
     type = "scroll-pane", name = "tf-stock-scroll",
     horizontal_scroll_policy = "never",
   })
-  sscroll.style.height = 110
+  sscroll.style.height = 200
   sscroll.style.horizontally_stretchable = true
   sscroll.add({ type = "flow", name = "tf-stock", direction = "vertical" })
 
@@ -796,7 +853,7 @@ end
 -- ouverte par le bouton de sa titlebar. Choix du signal de sortie.
 -- ---------------------------------------------------------------------------
 
-local CIRCUIT_WINDOW = "tf-circuit-window"
+-- CIRCUIT_WINDOW est défini en tête (préfixé par variante) ; on l'expose pour control.
 gui.CIRCUIT_WINDOW = CIRCUIT_WINDOW
 
 -- Recale la fenêtre circuit contre le bord droit de la principale.
@@ -805,8 +862,10 @@ function gui.reposition_circuit(player)
   local side = player.gui.screen[CIRCUIT_WINDOW]
   if not (base and base.valid and side and side.valid) then return end
   local scale = player.display_scale or 1
-  -- Largeur de la principale ~ 380 (gauche) + 430 (droite) + marges ≈ 840.
-  local base_w = 840
+  -- Largeur de la principale = colonne gauche + colonne droite + marges du frame
+  -- (padding gauche/droite + espacement des deux colonnes ≈ 24 px). Dérivée des
+  -- constantes de colonnes pour rester juste si on redimensionne.
+  local base_w = LEFT_WIDTH + RIGHT_WIDTH + 24
   side.location = {
     x = base.location.x + math.floor(base_w * scale),
     y = base.location.y,
@@ -858,29 +917,6 @@ function gui.toggle_circuit(player, state)
   })
   inner.style.width = 240
 
-  -- Source des trains : BP (livre de plans) ou STC (modèles Smart Train
-  -- Combinator). Proposé uniquement si le mod STC expose son interface.
-  if remote.interfaces["smart-train-combinator"] then
-    inner.add({
-      type = "label",
-      caption = { "tf-gui.source-title" },
-      style = "caption_label",
-    })
-    local src = state.source_mode or "bp"
-    for _, m in ipairs({ { "bp", "tf-gui.source-bp" },
-                         { "stc", "tf-gui.source-stc" } }) do
-      inner.add({
-        type = "radiobutton",
-        name = "tf-source-" .. m[1],
-        caption = { m[2] },
-        state = (src == m[1]),
-        tags = { tf_source_mode = m[1] },
-      })
-    end
-    -- (Le carburant n'est plus choisi ici : les trains générés sont remplis avec
-    -- le meilleur carburant débloqué compatible disponible dans la réserve.)
-  end
-
   inner.add({
     type = "label",
     caption = { "tf-gui.emit-title" },
@@ -916,6 +952,23 @@ function gui.toggle_circuit(player, state)
     })
   end
 
+  -- Carburant générique — variante BP seulement (en STC c'est toujours le cas).
+  -- Décoché (défaut) : le train utilise le carburant du blueprint (0.5.x). Coché :
+  -- remplissage au meilleur carburant débloqué dispo + interruption Refuel.
+  if names.has_bpchest then
+    inner.add({
+      type = "line", direction = "horizontal",
+    })
+    inner.add({
+      type = "checkbox",
+      name = "tf-generic-fuel",
+      caption = { "tf-gui.generic-fuel" },
+      tooltip = { "tf-gui.generic-fuel-tip" },
+      state = state.generic_fuel and true or false,
+      tags = { tf_generic_fuel = true },
+    })
+  end
+
   gui.reposition_circuit(player)
 end
 
@@ -926,12 +979,15 @@ end
 -- `stc_index` (optionnel) : quand il est fourni, le dialogue est pour un modèle
 -- STC (state.stc_models[stc_index]) et non un plan du coffre ; la validation
 -- reconstruira le template synthétique au lieu de le relire dans st.templates.
-function gui.open_params(player, state, index, template, stc_index)
-  local old = player.gui.screen["tf-params"]
+-- `res_kind` (optionnel) : "item" ou "fluid" — en mode STC on CONNAÎT le kind du
+-- modèle, donc on restreint le choix de ressource au bon type (picker item OU
+-- fluid) au lieu d'un picker signal générique. nil (BP) → picker signal.
+function gui.open_params(player, state, index, template, stc_index, res_kind)
+  local old = player.gui.screen[PARAMS_WINDOW]
   if old then old.destroy() end
   local frame = player.gui.screen.add({
     type = "frame",
-    name = "tf-params",
+    name = PARAMS_WINDOW,
     direction = "vertical",
     caption = { "tf-gui.params-title" },
     -- On garde la SIGNATURE du plan (pas seulement l'index) : le livre reflète
@@ -957,10 +1013,12 @@ function gui.open_params(player, state, index, template, stc_index)
       })
       label.style.horizontally_stretchable = true
       label.style.minimal_width = 120
+      -- Picker restreint au kind connu (STC) sinon signal générique (BP).
       row.add({
         type = "choose-elem-button",
-        elem_type = "signal",
-        tags = { tf_param = p.id or ("parameter-" .. (i - 1)) },
+        elem_type = res_kind or "signal",
+        tags = { tf_param = p.id or ("parameter-" .. (i - 1)),
+                 tf_param_kind = res_kind },
       })
     end
   end
@@ -978,7 +1036,7 @@ end
 
 -- Récupère les valeurs choisies dans le dialogue des paramètres.
 function gui.collect_params(player)
-  local frame = player.gui.screen["tf-params"]
+  local frame = player.gui.screen[PARAMS_WINDOW]
   if not frame then return nil end
   local params = {}
   for _, row in pairs(frame["tf-params-rows"].children) do
@@ -986,7 +1044,13 @@ function gui.collect_params(player)
       if el.type == "choose-elem-button" and el.tags.tf_param then
         local v = el.elem_value
         if v then
-          params[el.tags.tf_param] = { type = v.type or "item", name = v.name }
+          -- Picker signal → v = {type,name} ; picker item/fluid → v = nom (string),
+          -- le type vient alors du kind du bouton (tf_param_kind).
+          if type(v) == "table" then
+            params[el.tags.tf_param] = { type = v.type or "item", name = v.name }
+          else
+            params[el.tags.tf_param] = { type = el.tags.tf_param_kind or "item", name = v }
+          end
         end
       end
     end
@@ -1119,6 +1183,7 @@ function gui.open_bp(player, state)
 end
 
 gui.WINDOW = WINDOW
+gui.PARAMS_WINDOW = PARAMS_WINDOW
 gui.BP_WINDOW = BP_WINDOW
 
 return gui

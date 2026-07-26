@@ -95,6 +95,20 @@ local function requested_items(s)
   return out
 end
 
+-- Le template porte-t-il un carburant blueprinté (au moins une item-request qui
+-- est un carburant) ? Sert au « générique implicite » : un BP SANS aucun
+-- carburant se comporte comme générique même si l'option est décochée (rien à
+-- respecter → on remplit au meilleur carburant dispo).
+function builder.template_has_bp_fuel(template)
+  for _, s in ipairs(template.stock or {}) do
+    for name in pairs(requested_items(s)) do
+      local it = prototypes.item[name]
+      if it and it.fuel_value and it.fuel_value > 0 then return true end
+    end
+  end
+  return false
+end
+
 -- Cache équipement -> item qui le pose. Un équipement est placé par l'item
 -- dont le prototype a placed_as_equipment_result = <cet équipement>. À défaut
 -- (mapping introuvable), on retombe sur un item de même nom si présent.
@@ -202,36 +216,40 @@ local function loco_fuel_capacity(stock, fuel)
 end
 builder.loco_fuel_capacity = loco_fuel_capacity
 
--- Items requis par le template : les véhicules eux-mêmes + tout ce que le
--- blueprint demande dedans (munitions...) SAUF le carburant, désormais géré à
--- part (volet fuel du besoin — voir compute_need).
-function builder.compute_need(template)
+-- Items requis par le template. `generic` = mode carburant générique :
+--   true  (STC toujours, ou BP avec l'option cochée) → le carburant des
+--         item-requests du blueprint est IGNORÉ (géré par le volet need.fuel :
+--         meilleur carburant débloqué dispo) ;
+--   false (BP option décochée, défaut) → comportement 0.5.x : le carburant
+--         blueprinté est COMPTÉ comme un composant (need.items) et inséré tel
+--         quel au spawn ; PAS de volet need.fuel, PAS d'interruption Refuel.
+function builder.compute_need(template, generic)
   local need = {}
   local items = {}
   for _, s in ipairs(template.stock) do
     local item = place_item_for(s.name)
     items[item] = (items[item] or 0) + 1
     for name, n in pairs(requested_items(s)) do
-      -- Le CARBURANT des item-requests (ex. loco blueprintée avec du plein) est
-      -- ignoré : le carburant est géré par le volet fuel (meilleur carburant
-      -- débloqué dispo). On garde les autres requests (munitions...).
       local it = prototypes.item[name]
-      if not (it and it.fuel_value and it.fuel_value > 0) then
+      local is_fuel = it and it.fuel_value and it.fuel_value > 0
+      -- En générique on ignore le carburant du BP (volet fuel s'en charge) ; en
+      -- mode BP historique on le garde comme composant.
+      if (not is_fuel) or (not generic) then
         items[name] = (items[name] or 0) + n
       end
     end
-    -- Équipements de la grille : demandés/consommés comme les composants.
     for name, n in pairs(grid_items(s)) do
       items[name] = (items[name] or 0) + n
     end
   end
   need.items = items
-  -- Volet carburant : nil si aucune loco à burner (ex. loco solaire) ; sinon les
-  -- catégories acceptées + le stock (pour calculer le plein selon le carburant
-  -- finalement retenu dans missing/consume/spawn).
-  local cats = compatible_fuel_categories(template.stock)
-  if next(cats) then
-    need.fuel = { categories = cats, stock = template.stock }
+  -- Volet carburant générique : SEULEMENT en mode générique, et s'il y a une loco
+  -- à burner (nil pour loco solaire).
+  if generic then
+    local cats = compatible_fuel_categories(template.stock)
+    if next(cats) then
+      need.fuel = { categories = cats, stock = template.stock }
+    end
   end
   return need
 end
@@ -375,6 +393,51 @@ function builder.track_free(state)
     type = STOCK_TYPES, area = area }) == 0
 end
 
+-- Zone de la voie interne (même calcul que track_free) — factorisé pour clear_track.
+local function internal_track_area(state)
+  local e = state.entity
+  local n_ext = (state.extensions and #state.extensions) or 0
+  return {
+    { e.position.x - 18, e.position.y + RAIL_Y - 1.5 },
+    { e.position.x + 21 + n_ext * MODULE_WIDTH, e.position.y + RAIL_Y + 1.5 },
+  }
+end
+
+-- « Nettoyer » : détruit tout le matériel roulant présent sur la voie interne
+-- (un train coincé qui ne part pas) et REMBOURSE son coût dans la réserve —
+-- l'item de placement de chaque véhicule + le contenu de ses inventaires
+-- (carburant des locos, munitions, cargaison éventuelle). Ce qui ne rentre pas
+-- est déversé au sol. Retourne le nombre de véhicules retirés.
+function builder.clear_track(state)
+  local e = state.entity
+  if not (e and e.valid) then return 0 end
+  local vehicles = e.surface.find_entities_filtered({
+    type = STOCK_TYPES, area = internal_track_area(state) })
+  if #vehicles == 0 then return 0 end
+
+  local refund = {}
+  local function add(name, n)
+    if name and n and n > 0 then refund[name] = (refund[name] or 0) + n end
+  end
+  for _, v in ipairs(vehicles) do
+    if v.valid then
+      add(place_item_for(v.name), 1)  -- le véhicule lui-même
+      -- Contenu de tous ses inventaires (fuel, cargo, munitions...).
+      for i = 1, v.get_max_inventory_index() do
+        local inv = v.get_inventory(i)
+        if inv then
+          -- get_contents (2.0) = liste de { name, count, quality }.
+          for _, it in pairs(inv.get_contents()) do add(it.name, it.count) end
+        end
+      end
+    end
+  end
+  for _, v in ipairs(vehicles) do if v.valid then v.destroy() end end
+  -- Rembourse via le même chemin que refund (réserve + spill au sol au débordement).
+  builder.refund(state, { items = refund })
+  return #vehicles
+end
+
 -- Le bloc de sortie est-il libre ? Avec deux sorties possibles (ouest/est), il
 -- suffit qu'UN côté OUVERT ait son signal ouvert : le pathfinder choisira ce
 -- côté selon le schedule. Un signal absent est traité comme ouvert (comme avant).
@@ -437,7 +500,11 @@ end
 -- `fuel_item` (optionnel) = carburant retenu par missing/consume, DÉJÀ prélevé
 -- de la réserve ; on l'insère dans les locos jusqu'au plein. nil = pas de besoin
 -- carburant (loco solaire) ou repli sur ce qui traîne en réserve.
-function builder.spawn(state, template, params, fuel_item)
+-- `generic` = mode carburant générique (STC, ou BP option cochée). En mode BP
+-- historique (generic=false), on insère le carburant BLUEPRINTÉ tel quel (les
+-- item-requests fuel, déjà payées comme composants) et on ne fait NI remplissage
+-- au meilleur carburant NI repli.
+function builder.spawn(state, template, params, fuel_item, generic)
   local e = state.entity
   if not (e and e.valid) then return nil, "spawn-failed" end
   if #template.stock > builder.capacity(state) then
@@ -509,11 +576,17 @@ function builder.spawn(state, template, params, fuel_item)
   for i, v in ipairs(spawned) do
     for name, n in pairs(requested_items(template.stock[i])) do
       local ip = prototypes.item[name]
-      if not (ip and ip.fuel_value and ip.fuel_value > 0) then
-        v.insert({ name = name, count = n })  -- munitions, etc. (pas le carburant)
+      local is_fuel = ip and ip.fuel_value and ip.fuel_value > 0
+      -- Non-carburant (munitions…) : toujours inséré. Carburant du BP : inséré
+      -- UNIQUEMENT en mode BP historique (generic=false) ; en générique le
+      -- carburant est géré par fuel_item ci-dessous.
+      if (not is_fuel) or (not generic) then
+        v.insert({ name = name, count = n })
       end
     end
-    if v.type == "locomotive" then
+    -- Remplissage carburant GÉNÉRIQUE seulement (STC / BP option cochée). En mode
+    -- BP historique, le carburant vient déjà des item-requests insérées ci-dessus.
+    if generic and v.type == "locomotive" then
       local fi = v.get_fuel_inventory()
       if fi then
         if fuel_item then
@@ -690,18 +763,19 @@ function builder.update_circuit(state)
 end
 
 -- Construction immédiate tout-en-un (interface remote / tests) : vérifie les
--- composants, la voie et la sortie, consomme puis pose.
-function builder.try_spawn(state, template, params)
+-- composants, la voie et la sortie, consomme puis pose. `generic` = mode carburant
+-- générique (voir compute_need/spawn).
+function builder.try_spawn(state, template, params, generic)
   if #template.stock > builder.capacity(state) then
     return nil, "spawn-too-long"
   end
-  local need = builder.compute_need(template)
+  local need = builder.compute_need(template, generic)
   local miss, miss_str, fuel_item, fuel_short = builder.missing(state, need)
   if next(miss) or fuel_short then return nil, "spawn-missing", miss_str end
   if not builder.track_free(state) then return nil, "spawn-track-occupied" end
   if not builder.exit_open(state) then return nil, "spawn-exit-blocked" end
   builder.consume(state, need, fuel_item)
-  local ok, err = builder.spawn(state, template, params, fuel_item)
+  local ok, err = builder.spawn(state, template, params, fuel_item, generic)
   if not ok then
     builder.refund(state, need, fuel_item)
     return nil, err

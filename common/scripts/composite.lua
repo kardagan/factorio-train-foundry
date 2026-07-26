@@ -13,14 +13,16 @@
 -- collisionne normalement avec tout. La fonderie crée ensuite ses propres
 -- rails internes, détruits avec elle ; le rail de raccord reste au joueur.
 
+local names = require("names")
+
 local composite = {}
 
-local RAIL       = "tf-rail"
-local RAIL_OVER  = "tf-rail-over"  -- rail dessiné par-dessus le mur (sortie est)
-local INPUT      = "tf-input"
-local SIGNAL     = "tf-signal"
-local COMBINATOR = "tf-combinator"
-local BPCHEST    = "tf-blueprints"
+local RAIL       = names.rail
+local RAIL_OVER  = names.rail_over  -- rail dessiné par-dessus le mur (sortie est)
+local INPUT      = names.input
+local SIGNAL     = names.signal
+local COMBINATOR = names.combinator
+local BPCHEST    = names.bpchest
 
 -- Réserve (coffre de fer), coffre à blueprints et connecteur circuit, posés
 -- sur le PARVIS ouest, dans la zone libre hors collision (x < -18) : de
@@ -142,6 +144,13 @@ local function fill_track_abs(master_state, ref, bucket, x_from_abs, x_to_abs)
   if x0 % 2 == 0 then x0 = x0 - 1 end
   for x = x0, x1, 2 do
     local pos = { x, ry }
+    -- La jonction tombe SOUS les murs accolés des deux modules : un rail normal y
+    -- serait MASQUÉ par le sprite du bâtiment (testé : trou visuel). On y met donc
+    -- un RAIL_OVER (dessiné au-dessus du sprite). Effet de bord connu et assumé
+    -- (temporaire) : le rail-over passe aussi au-dessus des roues des wagons, qui
+    -- sont donc masquées à la jonction — aucun calque n'existe entre le sprite et
+    -- les roues pour l'éviter. IMPORTANT : deux straight-rail ne coexistent pas —
+    -- un tf-rail normal déjà présent est détruit puis remplacé par le rail-over.
     local has_over = false
     for _, ex in ipairs(surface.find_entities_filtered({
       type = "straight-rail", position = pos, radius = 0.2 })) do
@@ -149,8 +158,6 @@ local function fill_track_abs(master_state, ref, bucket, x_from_abs, x_to_abs)
         if ex.name == RAIL_OVER then
           has_over = true
         elseif ex.name == RAIL then
-          -- Rail normal masqué par le mur : le retirer (des rails du master si
-          -- présent) pour libérer la position au RAIL_OVER (pas de coexistence).
           for i = #(master_state.rails or {}), 1, -1 do
             if master_state.rails[i] == ex then table.remove(master_state.rails, i) end
           end
@@ -198,11 +205,13 @@ function composite.build(entity)
     -- posée par lay_rails). Droite (est) opt-in via la fenêtre → open_east.
     exit_left = true,
     exit_right = false,
-    -- Source des trains : "bp" (livre de plans, défaut) ou "stc" (modèles lus
-    -- chez Smart Train Combinator via remote.call). Le mode "stc" n'est proposé
-    -- que si le mod est présent. (Le carburant des trains STC n'est plus un choix :
-    -- builder remplit avec le meilleur carburant débloqué dispo au spawn.)
-    source_mode = "bp",
+    -- La source des trains n'est plus un choix runtime : elle est fixée par la
+    -- VARIANTE du mod (BP ou STC via names.source). Plus de champ source_mode.
+    -- Carburant générique (variante BP uniquement, case dans Configuration) :
+    -- false = respecter le carburant du blueprint (défaut, 0.5.x) ; true = remplir
+    -- au meilleur carburant débloqué dispo + interruption Refuel. En STC toujours
+    -- générique quel que soit ce champ.
+    generic_fuel = false,
   }
 
   -- Voie interne du master : -13..+17 (impairs), zone d'assemblage. Le raccord
@@ -214,8 +223,10 @@ function composite.build(entity)
   state.input = place(entity, INPUT, INPUT_OFFSET, defines.direction.north)
   state.combinator = place(entity, COMBINATOR, COMBINATOR_OFFSET,
     defines.direction.north)
-  state.bpchest = place(entity, BPCHEST, BPCHEST_OFFSET, defines.direction.north)
-  composite.set_bpchest_filters(state)
+  if names.has_bpchest then
+    state.bpchest = place(entity, BPCHEST, BPCHEST_OFFSET, defines.direction.north)
+    composite.set_bpchest_filters(state)
+  end
 
   -- Master neuf = minable (aucune extension) ; explicite pour ne pas dépendre
   -- du défaut du prototype. Se verrouille dès qu'une extension est accolée.
@@ -282,6 +293,7 @@ end
 
 -- Le coffre à blueprints (ou nil).
 function composite.bp_chest(state)
+  if not names.bpchest then return nil end
   if state.bpchest and state.bpchest.valid then return state.bpchest end
   return nil
 end
@@ -289,6 +301,7 @@ end
 -- Filtre le coffre à blueprints pour n'accepter que des blueprints (tous les
 -- slots filtrés sur l'item "blueprint").
 function composite.set_bpchest_filters(state)
+  if not names.bpchest then return end
   local c = state.bpchest
   if not (c and c.valid) then return end
   local inv = c.get_inventory(defines.inventory.chest)
@@ -300,6 +313,7 @@ end
 
 -- Coffre à blueprints : (re)crée-le pour les fonderies d'avant cette version.
 function composite.ensure_bpchest(state)
+  if not names.bpchest then return end
   if state.bpchest and state.bpchest.valid then return end
   local e = state.entity
   if not (e and e.valid) then return end
@@ -434,6 +448,24 @@ local ADJ_MAX = 42
 --      détruit/recrée rails_east + signal_east proprement, par-dessus une voie
 --      de jonction déjà stabilisée.
 function composite.rebuild_chain_track(master_state, chain)
+  -- (0) NETTOYAGE GÉOMÉTRIQUE des rails ORPHELINS à l'est de la chaîne réduite :
+  -- au retrait d'extension(s), des tf-rail/tf-rail-over de la voie d'une extension
+  -- disparue peuvent rester (positions "réutilisées" non trackées dans une seule
+  -- liste). On détruit tout rail interne sur la rangée RAIL_Y au-delà du bord est
+  -- légitime du dernier module (centre + EAST_RAIL_X_TO). Fiable quel que soit
+  -- l'ordre de retrait, indépendant du tracking par liste.
+  local last = chain[#chain]
+  if last and last.valid then
+    local ry = last.position.y + RAIL_Y
+    local x_min = last.position.x + EAST_RAIL_X_TO + 1  -- au-delà de la sortie est légitime
+    for _, r in ipairs(last.surface.find_entities_filtered({
+      type = "straight-rail",
+      area = { { x_min, ry - 0.5 }, { x_min + 4 * MODULE_WIDTH, ry + 0.5 } },
+    })) do
+      if r.valid and (r.name == RAIL or r.name == RAIL_OVER) then r.destroy() end
+    end
+  end
+
   -- (1) PURGE TOTALE des rail-over dynamiques (jonctions + sortie est) : on repart
   -- d'un état propre pour éviter qu'un rail-over d'une zone (ex. ancienne sortie
   -- est) soit vu comme "déjà présent" par une autre (jonction) puis détruit,
@@ -582,12 +614,16 @@ function composite.destroy(state)
   if not state then return end
 
   spill_chest(composite.reserve(state))
-  spill_chest(composite.bp_chest(state))
+  if names.has_bpchest then
+    spill_chest(composite.bp_chest(state))
+  end
   if state.input and state.input.valid then
     state.input.destroy()
   end
-  if state.bpchest and state.bpchest.valid then
-    state.bpchest.destroy()
+  if names.has_bpchest then
+    if state.bpchest and state.bpchest.valid then
+      state.bpchest.destroy()
+    end
   end
   -- Champs legacy des vieilles saves (anneau de quais, ancien coffre).
   for _, c in ipairs(state.inputs or {}) do
