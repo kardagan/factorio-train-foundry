@@ -83,7 +83,7 @@ data["name"] = name
 data["version"] = modver
 data["factorio_version"] = gamever
 if variant == "stc":
-    data["title"] = "Train Foundry STC"
+    data["title"] = "Train Foundry for Smart Train Combinator"
     data["description"] = ("A large train foundry that assembles complete trains from Smart Train "
                            "Combinator models: pick a train shape, choose its resource, and the "
                            "finished train fuels up and drives off onto your rail network on its own. "
