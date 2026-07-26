@@ -8,9 +8,11 @@
 
 ## Train Foundry for Smart Train Combinator
 
-Build complete trains **from your Smart Train Combinator models** — no blueprint
-needed. Pick a train shape, choose what it carries, and the foundry assembles the
-whole train and sends it off onto your network, already matched to your STC stops.
+**The train factory for your Smart Train Combinator network.** If you drive your
+trains with [Smart Train Combinator](https://mods.factorio.com/mod/smart-train-combinator),
+this foundry closes the loop: it reads the train shapes your combinators already
+define, builds those exact trains for you, and sends them out **pre-wired to your
+STC stops** — no blueprint, and no hand-editing a single schedule.
 
 > **Requires [Smart Train Combinator](https://mods.factorio.com/mod/smart-train-combinator).**
 > Prefer defining trains with a blueprint? Get the companion mod
@@ -18,6 +20,26 @@ whole train and sends it off onto your network, already matched to your STC stop
 > one building of each per surface.
 
 ![The foundry](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/stc-building.png)
+
+### Built around Smart Train Combinator
+
+Smart Train Combinator already knows everything about your trains: which shapes
+run on your network (solid/fluid, wagon type and count, storage or not) and how
+their stops are named. This foundry taps straight into that:
+
+- **Your combinators are the catalogue.** The window doesn't ask you to draw a
+  train — it lists the exact shapes your STC combinators describe on the surface.
+  Add or change a combinator, and the list follows.
+- **The trains slot right into your STC setup.** Every train leaves with the
+  loading/refuel/stop/unload schedule and a train group built to **Smart Train
+  Combinator's own station-naming convention** — so its interrupts match your STC
+  stops immediately, exactly as if you'd wired the train by hand.
+- **You only choose the cargo.** Pick a shape, pick what it carries — that's it.
+  The foundry handles composition, fuel, schedule, group and dispatch.
+
+So instead of blueprinting a train, tuning its schedule, and hoping the stop
+names line up, you press two buttons and a matching train rolls onto your STC
+network.
 
 ### How it works
 
