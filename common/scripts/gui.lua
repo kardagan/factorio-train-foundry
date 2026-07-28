@@ -952,6 +952,32 @@ function gui.toggle_circuit(player, state)
     })
   end
 
+  -- Voie de RECYCLAGE (optionnelle) : titre + case "Active" + ses côtés gauche/
+  -- droite, GRISÉS tant que la voie de recyclage n'est pas activée.
+  inner.add({
+    type = "label",
+    caption = { "tf-gui.deco-title" },
+    style = "caption_label",
+  })
+  inner.add({
+    type = "checkbox",
+    name = "tf-deco",
+    caption = { "tf-gui.deco-active" },
+    state = state.deco and true or false,
+    tags = { tf_deco = true },
+  })
+  for _, s in ipairs({ { "left", "tf-gui.exit-left", state.deco_left },
+                       { "right", "tf-gui.exit-right", state.deco_right } }) do
+    inner.add({
+      type = "checkbox",
+      name = "tf-deco-" .. s[1],
+      caption = { s[2] },
+      state = s[3] and true or false,
+      enabled = state.deco and true or false,
+      tags = { tf_deco_side = s[1] },
+    })
+  end
+
   -- Carburant générique — variante BP seulement (en STC c'est toujours le cas).
   -- Décoché (défaut) : le train utilise le carburant du blueprint (0.5.x). Coché :
   -- remplissage au meilleur carburant débloqué dispo + interruption Refuel.

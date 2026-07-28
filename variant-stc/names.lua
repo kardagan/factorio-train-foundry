@@ -11,6 +11,9 @@ return {
   input       = "tfstc-input",
   signal      = "tfstc-signal",
   combinator  = "tfstc-combinator",
+  wall        = "tfstc-wall",               -- enceinte de murs du bâtiment
+  gate        = "tfstc-gate",               -- portes aux sorties des voies
+  track_deco  = "tfstc-track-deco",         -- [TEST] entité-déco voie de jonction
   bpchest     = nil,                        -- pas de coffre à blueprints
   has_bpchest = false,
   dummy_cat   = "tfstc-dummy",

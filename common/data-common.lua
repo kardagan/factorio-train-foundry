@@ -16,6 +16,9 @@ local RAIL_OVER  = names.rail_over
 local INPUT      = names.input
 local SIGNAL     = names.signal
 local COMBINATOR = names.combinator
+local WALL       = names.wall
+local GATE       = names.gate
+local TRACK_DECO = names.track_deco
 
 -- Chemin graphique du mod courant (le nom de mod diffère par variante : on passe
 -- par le placeholder résolu à l'exécution du data stage).
@@ -78,31 +81,17 @@ local rail = table.deepcopy(data.raw["straight-rail"]["straight-rail"])
 rail.name = RAIL
 hide(rail)
 
--- Rail "over" : identique, mais dessiné PAR-DESSUS le sprite du bâtiment (mur est).
+-- Rail "over" : clone du rail vanilla, RENDU NORMAL (comme le rail interne).
+-- Depuis le passage aux VRAIES entités (murs/portes) le bâtiment n'a plus de gros
+-- sprite mono-bloc masquant la voie : le rail-over n'a donc PLUS besoin d'un
+-- render_layer élevé (higher-object-above) qui, historiquement, le faisait passer
+-- par-dessus le sprite du mur — mais aussi par-dessus le personnage et les roues
+-- des wagons (bug visuel). On garde un prototype distinct (RAIL_OVER) pour ne pas
+-- changer la logique de pose (raccords ouest/est, jonctions), mais son rendu est
+-- désormais celui d'un rail ordinaire.
 local rail_over = table.deepcopy(data.raw["straight-rail"]["straight-rail"])
 rail_over.name = RAIL_OVER
 hide(rail_over)
--- Le rail-over doit se dessiner AU-DESSUS du sprite du bâtiment (lower-object,
--- sinon masqué par les murs aux jonctions) mais SOUS les roues des wagons (qui
--- sont sur une couche fixe entre lower-object et object). On vise donc
--- "lower-object-above-shadow", la couche juste au-dessus de lower-object : la
--- voie de jonction reste visible par-dessus les murs, sans masquer les roues ni
--- paraître plus claire que le tampon peint. (Avant : object/higher-object-above
--- → au-dessus des roues, d'où les roues masquées et l'aspect trop clair.)
--- Le rail-over ne sert plus qu'au tronçon de SORTIE qui traverse le mur EST du
--- bâtiment (open_east/lay_east_rails) — là il DOIT passer au-dessus du sprite,
--- et le masquage des roues n'y est pas gênant (le train ne stationne pas sous ce
--- mur). Aux jonctions internes on utilise désormais un rail normal (voir
--- fill_track_abs). D'où le retour aux couches hautes object/higher-object-above.
-if rail_over.pictures and type(rail_over.pictures) == "table" then
-  rail_over.pictures.render_layers = {
-    stone_path_lower = "object",
-    stone_path       = "object",
-    tie              = "object",
-    screw            = "object",
-    metal            = "higher-object-above",
-  }
-end
 
 -- Réserve : un VRAI coffre de fer (visible, posé sur le parvis ouest).
 local input = table.deepcopy(data.raw["container"]["iron-chest"])
@@ -135,6 +124,21 @@ combinator.flags = { "not-blueprintable", "not-deconstructable",
 combinator.hidden_in_factoriopedia = true
 combinator.selection_priority = 100
 
+-- Enceinte : clone du mur de pierre vanilla, posé au pourtour du bâtiment.
+-- hide() le rend non-minable/non-sélectionnable ; il conserve sa collision
+-- (bloque le personnage → l'intérieur n'est accessible que par les portes).
+local wall = table.deepcopy(data.raw["wall"]["stone-wall"])
+wall.name = WALL
+hide(wall)
+
+-- Porte : clone du gate vanilla, posée aux sorties actives des voies. hide()
+-- garde sa collision (bloque tant que fermée) et son comportement d'ouverture.
+-- NB : l'ouverture au passage d'un TRAIN (le gate vanilla réagit au personnage)
+-- est à valider en jeu — repli éventuel (décoratif / piloté) hors de ce jet.
+local gate = table.deepcopy(data.raw["gate"]["gate"])
+gate.name = GATE
+hide(gate)
+
 -- ============================================================================
 -- Bâtiment principal (identique aux deux variantes, seul le name diffère)
 -- ============================================================================
@@ -147,34 +151,42 @@ local main = {
             "get-by-unit-number", "not-rotatable" },
   minable = { mining_time = 3, result = MAIN },
   max_health = 3000,
-  collision_box = { { -18.0, -10.7 }, { 19.7, 10.7 } },
+  -- Collision RÉTRÉCIE côté ouest/est (−16 / +17.7 au lieu de −18 / +19.7) : les
+  -- PORTES (x=-18/+19) sont ainsi HORS de la collision du bâtiment. Sinon une gate
+  -- collée au bâtiment ne se referme jamais (le bâtiment reste dans son rayon
+  -- d'activation → déclencheur permanent). Les VRAIS MURS gardent l'enceinte
+  -- étanche ; la bande libérée entre collision et murs est protégée par les murs.
+  collision_box = { { -16.0, -10.7 }, { 17.7, 10.7 } },
   selection_box = { { -20, -11 }, { 20, 11 } },
   selection_priority = 40,
   tile_width = 40,
   tile_height = 22,
   build_grid_size = 2,
-  collision_mask = { layers = { player = true, meltable = true,
-                                is_object = true } },
+  -- Pas de layer "player" : le personnage peut ENTRER à pied (par les portes) et
+  -- marcher sur le sol intérieur. Ce sont les VRAIS MURS (stone-wall) qui
+  -- l'arrêtent au pourtour, les portes qui le laissent passer. On garde
+  -- is_object/meltable pour bloquer la construction et les entités dans le footprint.
+  collision_mask = { layers = { meltable = true, is_object = true } },
   crafting_categories = { names.dummy_cat },
   crafting_speed = 1,
   energy_source = { type = "electric", usage_priority = "secondary-input",
                     drain = "30kW" },
   energy_usage = "450kW",
   allowed_effects = {},
+  -- [TEMPORAIRE] Sprites du bâtiment DÉSACTIVÉS le temps de câbler les vraies
+  -- entités (murs, 2 voies, portes) : le sol + les portiques masquaient tout ce
+  -- qu'on veut voir. Bâtiment invisible pour l'instant. Les 2 couches (SOL
+  -- foundry-floor.png en lower-object + TOIT foundry-roof.png en
+  -- higher-object-above) seront REMISES une fois la structure entités validée.
   graphics_set = {
-    working_visualisations = {
-      {
-        always_draw = true,
-        render_layer = "lower-object",
-        animation = {
-          filename = GFX .. "foundry.png",
-          width = 1280,
-          height = 689,
-          scale = 1,
-          shift = { 0, -0.171875 },
-        },
-      },
-    },
+    -- working_visualisations = {
+    --   { always_draw = true, render_layer = "lower-object",
+    --     animation = { filename = GFX .. "foundry-floor.png", width = 1280,
+    --       height = 689, scale = 1, shift = { 0, -0.171875 } } },
+    --   { always_draw = true, render_layer = "higher-object-above",
+    --     animation = { filename = GFX .. "foundry-roof.png", width = 1280,
+    --       height = 689, scale = 1, shift = { 0, -0.171875 } } },
+    -- },
     animation = {
       filename = "__core__/graphics/empty.png",
       width = 1,
@@ -183,10 +195,43 @@ local main = {
   },
 }
 
+-- [DISCOVERY] Entité-déco de voie de jonction : une simple-entity-with-owner
+-- INVISIBLE et INERTE, posée par la fonderie sur chaque module, dont le sprite
+-- (variation pilotée au runtime via entity.graphics_variation) peint la voie
+-- jusqu'aux bords selon le côté ouvert. render_layer "lower-object" = SOUS les
+-- roues des wagons (comme le working_visualisation du bâtiment), contrairement à
+-- LuaRendering qui dessine au-dessus des entités (roues masquées partout).
+-- Variations base 1 : 1=right (bout ouest), 2=both (milieu), 3=left (bout est).
+-- random_variation_on_create=false SINON Factorio tire une variation au hasard à
+-- la pose et écrase notre graphics_variation.
+local function deco_variation(file)
+  return {
+    filename = GFX .. file,
+    width = 1280,
+    height = 689,
+    scale = 1,
+    shift = { 0, -0.171875 },
+    flags = { "no-crop" },
+  }
+end
+local track_deco = {
+  type = "simple-entity-with-owner",
+  name = TRACK_DECO,
+  render_layer = "lower-object",
+  random_variation_on_create = false,
+  collision_mask = { layers = {} },
+  pictures = {
+    deco_variation("foundry-link-right.png"),  -- 1
+    deco_variation("foundry-link-both.png"),   -- 2
+    deco_variation("foundry-link-left.png"),   -- 3
+  },
+}
+hide(track_deco)
+
 data:extend({
   { type = "recipe-category", name = names.dummy_cat },
 
-  main, rail, rail_over, input, signal, combinator,
+  main, rail, rail_over, input, signal, combinator, wall, gate, track_deco,
 
   -- Vue d'ensemble : raccourci + touche perso ouvrant la fonderie de la surface.
   {

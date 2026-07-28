@@ -11,6 +11,9 @@ return {
   input       = "tf-input",
   signal      = "tf-signal",
   combinator  = "tf-combinator",
+  wall        = "tf-wall",                  -- enceinte de murs du bâtiment
+  gate        = "tf-gate",                  -- portes aux sorties des voies
+  track_deco  = "tf-track-deco",           -- [TEST] entité-déco voie de jonction
   bpchest     = "tf-blueprints",
   has_bpchest = true,
   dummy_cat   = "train-foundry-dummy",

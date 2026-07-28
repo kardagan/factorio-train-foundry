@@ -74,11 +74,31 @@ local function chain_entities(master)
   return list
 end
 
--- Reconstruit toute la voie de la chaîne (jonctions + sortie est ré-ancrée) —
--- à appeler à chaque ajout/retrait d'extension. Centralise le nettoyage pour
--- éviter rails orphelins (retrait) et jonctions cassées (ajout).
+-- Comme chain_entities mais retourne les STATES ordonnés (master + extensions
+-- valides, ouest→est). Utilisé pour les murs de chaîne (composite n'a pas accès
+-- à storage, on lui passe les states).
+local function chain_states(master)
+  local list = {}
+  if master and master.entity and master.entity.valid then
+    list[#list + 1] = master
+  end
+  for _, un in ipairs(master and master.extensions or {}) do
+    local ext = storage.foundries[un]
+    if ext and ext.entity and ext.entity.valid then
+      list[#list + 1] = ext
+    end
+  end
+  return list
+end
+
+-- Reconstruit toute la voie de la chaîne (jonctions + sortie est ré-ancrée) ET
+-- les murs de chaîne (haut/bas par module, côté ouest sur le master, côté est sur
+-- le dernier module, hall continu entre modules) — à appeler à chaque ajout/
+-- retrait d'extension. Centralise le nettoyage pour éviter rails orphelins.
 local function refresh_chain_track(master)
-  if master then composite.rebuild_chain_track(master, chain_entities(master)) end
+  if not master then return end
+  composite.rebuild_chain_track(master, chain_entities(master))
+  composite.rebuild_chain_walls(master, chain_states(master))
 end
 
 -- Migration : remplissage des champs manquants des vieux states et nettoyage
@@ -104,15 +124,34 @@ local function migrate_all()
     -- Côtés de sortie (ajoutés avec la sortie est). Vieille save = gauche seule.
     if st.exit_left == nil then st.exit_left = true end
     if st.exit_right == nil then st.exit_right = false end
+    -- Voie de recyclage (optionnelle, off par défaut) + ses côtés.
+    if st.deco == nil then st.deco = false end
+    if st.deco_left == nil then st.deco_left = true end
+    if st.deco_right == nil then st.deco_right = false end
     -- Carburant générique (0.7.x) : défaut false = comportement 0.5.x (respecte
     -- le carburant du blueprint), pour ne pas surprendre une save existante.
     if st.generic_fuel == nil then st.generic_fuel = false end
+    -- [DISCOVERY] Ancien champ chain_sprites = rendus LuaRendering (au-dessus des
+    -- roues) remplacés par des entités-déco (deco_entities). Purge les vieux
+    -- rendus d'une save de test, sinon ils resteraient affichés.
+    if st.chain_sprites then
+      for _, id in ipairs(st.chain_sprites) do
+        if id and id.valid then id.destroy() end
+      end
+      st.chain_sprites = nil
+    end
     if not (st.entity and st.entity.valid) then
       composite.destroy(st)
       storage.foundries[un] = nil
     elseif st.role == "extension" then
-      -- Extension : pas de coffres/signal, juste sa voie.
+      -- Extension : pas de coffres/signal, juste sa voie + ses murs.
       st.master = st.master  -- (conservé tel quel)
+      -- Champs murs (ajoutés avec les extensions murées) : init défensive. Les
+      -- murs seront (re)posés par rebuild_chain_walls via refresh_chain_track du
+      -- master (déclenché plus bas dans cette même migration).
+      st.walls_static = st.walls_static or {}
+      st.side_west = st.side_west or {}
+      st.side_east = st.side_east or {}
     else
       -- MAÎTRE : champs de production + enfants.
       st.templates = st.templates or {}
@@ -130,6 +169,13 @@ local function migrate_all()
       composite.ensure_input(st)
       composite.ensure_combinator(st)
       if names.has_bpchest then composite.ensure_bpchest(st) end
+      -- Enceinte de murs (statique + colonnes) et 2e voie (déconstruction) :
+      -- ajoutées en place pour les fonderies d'avant cette version. ensure_walls
+      -- purge/repose les colonnes latérales (idempotent), le statique n'est posé
+      -- que s'il manque.
+      st.rails_deco = st.rails_deco or {}
+      -- composite.ensure_deco_track(st)  -- [STEP 1] rails désactivés
+      composite.ensure_walls(st)
       -- Raccord ouest en RAIL_OVER (écrase le mur) : les vieilles fonderies
       -- l'avaient en rail normal. On le reconstruit au bon calque si la sortie
       -- gauche est ouverte ; sinon on s'assure qu'il est bien retiré.
@@ -160,6 +206,10 @@ local function migrate_all()
     for _, r in ipairs(st.rails or {}) do ref(r) end
     for _, r in ipairs(st.rails_east or {}) do ref(r) end
     for _, r in ipairs(st.rails_junction or {}) do ref(r) end
+    for _, r in ipairs(st.rails_deco or {}) do ref(r) end
+    for _, w in ipairs(st.walls_static or {}) do ref(w) end
+    for _, w in ipairs(st.side_west or {}) do ref(w) end
+    for _, w in ipairs(st.side_east or {}) do ref(w) end
     ref(st.input)
     ref(st.bpchest)
     ref(st.signal)
@@ -170,8 +220,11 @@ local function migrate_all()
     for _, c in ipairs(st.combinators or {}) do ref(c) end
   end
   local child_names = { names.rail, names.rail_over, names.input, names.signal,
-                        names.combinator }
+                        names.combinator, names.wall, names.gate }
   if names.has_bpchest then child_names[#child_names + 1] = names.bpchest end
+  -- Entités-déco de test (plus jamais référencées) : toute occurrence résiduelle
+  -- est balayée comme orpheline (voir refresh_chain_sprites, désactivé).
+  if names.track_deco then child_names[#child_names + 1] = names.track_deco end
   for _, surface in pairs(game.surfaces) do
     for _, ent in pairs(surface.find_entities_filtered({
       name = child_names })) do
@@ -811,17 +864,40 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
       el.state = true
       return
     end
-    if side == "left" then
-      st.exit_left = want
-      if want then composite.open_west(st) else composite.close_west(st) end
-    else
-      st.exit_right = want
-      if want then
-        composite.open_east(st, east_end_entity(st))
-      else
-        composite.close_east(st, east_end_entity(st))
-      end
+    if side == "left" then st.exit_left = want else st.exit_right = want end
+    -- [STEP 1] rails désactivés → open_west/east neutralisés (rails en collision).
+    -- Recalcule les murs de TOUTE la chaîne : le côté ouest va sur le master, le
+    -- côté est sur le DERNIER module (pas sur le master s'il a une extension →
+    -- sinon un mur apparaît au milieu). refresh_chain_track gère master seul ET chaîne.
+    refresh_chain_track(st)
+    return
+  end
+
+  -- Voie de RECYCLAGE : case parent (active/désactive la 2e voie + ses portes).
+  if el.tags.tf_deco then
+    st.deco = el.state and true or false
+    -- Les portes de recyclage dépendent de deco : recalcule les murs de la chaîne.
+    refresh_chain_track(st)
+    -- Rafraîchit la fenêtre Config (fermer + rouvrir) pour griser/dégriser les
+    -- côtés de la voie de recyclage.
+    gui.toggle_circuit(player, st)  -- ferme (elle est ouverte)
+    gui.toggle_circuit(player, st)  -- rouvre à jour
+    return
+  end
+
+  -- Côtés de la voie de recyclage (indépendants de l'assemblage). Même garde :
+  -- pas de fermeture des deux côtés si la recyclage est active.
+  if el.tags.tf_deco_side then
+    local side = el.tags.tf_deco_side
+    local want = el.state
+    if st.deco and not want
+       and not (side == "left" and st.deco_right)
+       and not (side == "right" and st.deco_left) then
+      el.state = true
+      return
     end
+    if side == "left" then st.deco_left = want else st.deco_right = want end
+    refresh_chain_track(st)
     return
   end
 end)
