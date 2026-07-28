@@ -337,12 +337,13 @@ function composite.build_extension(entity, master_un)
 end
 
 -- Détecte, à la pose de `entity`, la fonderie dont le bord EST est ACCOLÉ au
--- bord OUEST de `entity` (voisin à l'ouest, même rangée). L'écart de centres de
--- deux modules réellement accolés vaut EXACTEMENT 38 (mesuré en jeu) : bord est
--- +19.7 touchant bord ouest -18.0, snappé sur la grille paire (build_grid_size=2).
--- La plage est SERRÉE (37..39) : au moindre espace entre les deux (dx >= 40), ce
--- ne sont plus des modules chaînés (sinon la jonction comblerait le vide par une
--- voie flottante au-dessus du terrain).
+-- bord OUEST de `entity` (voisin à l'ouest, même rangée). Deux modules accolés
+-- ont leurs centres espacés selon leur collision : depuis que la collision est
+-- rétrécie à -16/+17.7 (pour que les portes se ferment), les modules peuvent se
+-- coller de dx≈34 (collisions qui se touchent) jusqu'à dx=38 (largeur visuelle
+-- 40, halls parfaitement alignés). On accepte donc une plage LARGE (33..41) et on
+-- prend le voisin le plus proche. Au-delà (dx >= 42), il y a un vrai espace : ce
+-- ne sont plus des modules chaînés (sinon jonction = voie flottante sur le sol).
 function composite.adjacent_west(entity, foundries)
   local px, py = entity.position.x, entity.position.y
   local best, best_dx
@@ -350,7 +351,7 @@ function composite.adjacent_west(entity, foundries)
     local e = st.entity
     if e and e.valid and e ~= entity and e.surface == entity.surface then
       local dx = px - e.position.x  -- >0 si le voisin est à l'OUEST
-      if math.abs(e.position.y - py) < 1.0 and dx >= 37 and dx <= 39 then
+      if math.abs(e.position.y - py) < 1.0 and dx >= 33 and dx <= 41 then
         if not best_dx or dx < best_dx then
           best, best_dx = st, dx
         end
