@@ -966,10 +966,13 @@ function gui.toggle_circuit(player, state)
     state = state.deco and true or false,
     tags = { tf_deco = true },
   })
+  -- Côté d'entrée = RADIO (exclusif) : la voie de recyclage est un CUL-DE-SAC, une
+  -- seule entrée (gauche OU droite). Le bout opposé est fermé (mur+gare) → le train
+  -- y bute et ne peut pas repartir. Grisés tant que la recyclage n'est pas active.
   for _, s in ipairs({ { "left", "tf-gui.exit-left", state.deco_left },
                        { "right", "tf-gui.exit-right", state.deco_right } }) do
     inner.add({
-      type = "checkbox",
+      type = "radiobutton",
       name = "tf-deco-" .. s[1],
       caption = { s[2] },
       state = s[3] and true or false,

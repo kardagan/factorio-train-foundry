@@ -10,9 +10,13 @@
 
 local names = require("names")
 
-local MAIN       = names.building
-local RAIL       = names.rail
-local RAIL_OVER  = names.rail_over
+local MAIN         = names.building
+local RAIL         = names.rail
+local RAIL_OVER    = names.rail_over
+local RAIL_EXT     = names.rail_ext
+local RECYCLE_STOP = names.recycle_stop
+local BLOCK_SIGNAL = names.block_signal
+local BLOCK_COMBI  = names.block_combi
 local INPUT      = names.input
 local SIGNAL     = names.signal
 local COMBINATOR = names.combinator
@@ -93,6 +97,21 @@ local rail_over = table.deepcopy(data.raw["straight-rail"]["straight-rail"])
 rail_over.name = RAIL_OVER
 hide(rail_over)
 
+-- Rail EXTERNE : le tronçon de voie qui DÉPASSE hors du bâtiment (raccords
+-- ouest/est). Contrairement aux rails internes (hide() = non-sélectionnable,
+-- non-minable), celui-ci est SÉLECTIONNABLE pour que le joueur puisse étendre la
+-- voie à la main (poser des rails vanilla dans son prolongement). Non-minable /
+-- non-blueprintable quand même (destructible=false posé au runtime par place()).
+local rail_ext = table.deepcopy(data.raw["straight-rail"]["straight-rail"])
+rail_ext.name = RAIL_EXT
+rail_ext.minable = nil
+rail_ext.next_upgrade = nil
+rail_ext.fast_replaceable_group = nil
+rail_ext.selectable_in_game = true
+rail_ext.hidden_in_factoriopedia = true
+rail_ext.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
+                   "no-copy-paste" }
+
 -- Réserve : un VRAI coffre de fer (visible, posé sur le parvis ouest).
 local input = table.deepcopy(data.raw["container"]["iron-chest"])
 input.name = INPUT
@@ -138,6 +157,35 @@ hide(wall)
 local gate = table.deepcopy(data.raw["gate"]["gate"])
 gate.name = GATE
 hide(gate)
+
+-- Gare de RECYCLAGE : clone du train-stop vanilla, posé au bout de la voie de
+-- recyclage. NON hide() complet — une gare `hidden` n'apparaît PAS dans la liste
+-- des gares d'un schedule, or on veut pouvoir la cibler. Donc SÉLECTIONNABLE et
+-- ciblable (backer_name = names.recycle_stop_name), mais non-minable /
+-- non-blueprintable (destructible=false posé au runtime par place()).
+local recycle_stop = table.deepcopy(data.raw["train-stop"]["train-stop"])
+recycle_stop.name = RECYCLE_STOP
+recycle_stop.minable = nil
+recycle_stop.next_upgrade = nil
+recycle_stop.fast_replaceable_group = nil
+recycle_stop.selectable_in_game = true
+recycle_stop.hidden_in_factoriopedia = true
+recycle_stop.flags = { "not-blueprintable", "not-deconstructable",
+                       "not-upgradable", "no-copy-paste", "player-creation" }
+
+-- Signal de BLOCAGE (rail-signal caché) posé à l'entrée de la voie de recyclage,
+-- forcé TOUJOURS ROUGE par circuit (close_signal + condition 0<1, alimenté par le
+-- combinateur ci-dessous) → un train entré ne peut pas faire marche arrière.
+local block_signal = table.deepcopy(data.raw["rail-signal"]["rail-signal"])
+block_signal.name = BLOCK_SIGNAL
+hide(block_signal)
+
+-- Combinateur constant caché qui alimente le réseau de circuit du signal de
+-- blocage (il faut un fil pour que la condition de fermeture soit évaluée).
+local block_combi = table.deepcopy(
+  data.raw["constant-combinator"]["constant-combinator"])
+block_combi.name = BLOCK_COMBI
+hide(block_combi)
 
 -- ============================================================================
 -- Bâtiment principal (identique aux deux variantes, seul le name diffère)
@@ -231,7 +279,8 @@ hide(track_deco)
 data:extend({
   { type = "recipe-category", name = names.dummy_cat },
 
-  main, rail, rail_over, input, signal, combinator, wall, gate, track_deco,
+  main, rail, rail_over, rail_ext, recycle_stop, block_signal, block_combi,
+  input, signal, combinator, wall, gate, track_deco,
 
   -- Vue d'ensemble : raccourci + touche perso ouvrant la fonderie de la surface.
   {

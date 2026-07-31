@@ -8,11 +8,16 @@ return {
   building    = "train-foundry",          -- entité-bâtiment (INCHANGÉ)
   rail        = "tf-rail",
   rail_over   = "tf-rail-over",
+  rail_ext    = "tf-rail-ext",             -- rail hors bâtiment : sélectionnable, non-minable
   input       = "tf-input",
   signal      = "tf-signal",
   combinator  = "tf-combinator",
   wall        = "tf-wall",                  -- enceinte de murs du bâtiment
   gate        = "tf-gate",                  -- portes aux sorties des voies
+  recycle_stop      = "tf-recycle-stop",    -- gare de recyclage (train-stop)
+  recycle_stop_name = "[entity=train-foundry] Train Recycle",  -- backer_name (schedule)
+  block_signal      = "tf-block-signal",    -- signal toujours rouge (anti-marche-arrière)
+  block_combi       = "tf-block-combi",     -- combinateur constant qui ferme le signal
   track_deco  = "tf-track-deco",           -- [TEST] entité-déco voie de jonction
   bpchest     = "tf-blueprints",
   has_bpchest = true,

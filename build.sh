@@ -192,6 +192,77 @@ link_dev() {
   echo "NB : après édition du code, relance ./build.sh link $variant pour ré-assembler."
 }
 
+# Dev "chaud" : au lieu de COPIER les sources dans dist/link-<v>/, on les
+# SYMLINKE fichier par fichier. Éditer une source (common/scripts/composite.lua,
+# etc.) mets à jour le mod EN TEMPS RÉEL — plus besoin de ré-assembler.
+# Seuls data.lua et info.json sont générés (fichiers réels, pas des liens).
+# ATTENTION : game.reload_mods() ne recharge que le CONTROL-stage (control.lua +
+# require). Un changement de DATA-stage (data-common.lua, prototypes, collision)
+# exige toujours un REDÉMARRAGE COMPLET de Factorio.
+devlink() {
+  local variant="${1:-}"
+  [[ -n "$variant" ]] || { echo "Usage: $0 devlink {bp|stc}" >&2; exit 2; }
+  local name; name="$(mod_name "$variant")"
+  [[ "$name" != "?" ]] || { echo "Variante inconnue: $variant" >&2; exit 2; }
+  local mods="$HOME/.factorio/mods"
+  [[ -d "$mods" ]] || { echo "Dossier mods introuvable: $mods" >&2; exit 1; }
+
+  local stage="$DIST/devlink-${variant}"
+  rm -rf "$stage"
+  mkdir -p "$stage/scripts"
+
+  # Lie un fichier source (absolu) vers une cible dans le stage.
+  local link_file
+  link_file() { ln -sfn "$ROOT/$1" "$stage/$2"; }
+
+  # Code commun (aplati à la racine + scripts/).
+  link_file "common/control.lua"          "control.lua"
+  link_file "common/data-common.lua"       "data-common.lua"
+  link_file "common/scripts/builder.lua"   "scripts/builder.lua"
+  link_file "common/scripts/composite.lua" "scripts/composite.lua"
+  link_file "common/scripts/gui.lua"       "scripts/gui.lua"
+
+  # Spécifique variante (aplati). scripts/ de la variante fusionné.
+  link_file "variant-${variant}/names.lua"        "names.lua"
+  link_file "variant-${variant}/data-variant.lua" "data-variant.lua"
+  local f
+  for f in "variant-${variant}"/scripts/*.lua; do
+    [[ -e "$f" ]] && ln -sfn "$ROOT/$f" "$stage/scripts/$(basename "$f")"
+  done
+
+  # Partagés (dossiers) : liens directs.
+  local item
+  for item in "${SHARED[@]}"; do
+    [[ -e "$item" ]] && ln -sfn "$ROOT/$item" "$stage/$item"
+  done
+  # Migrations (dossier) si présentes.
+  [[ -d "variant-${variant}/migrations" ]] && \
+    ln -sfn "$ROOT/variant-${variant}/migrations" "$stage/migrations"
+  # Changelog + thumbnail + README propres à la variante.
+  [[ -e "variant-${variant}/changelog.txt" ]] && \
+    ln -sfn "$ROOT/variant-${variant}/changelog.txt" "$stage/changelog.txt"
+  [[ -e "variant-${variant}/thumbnail.png" ]] && \
+    ln -sfn "$ROOT/variant-${variant}/thumbnail.png" "$stage/thumbnail.png"
+  [[ -e "variant-${variant}/README.md" ]] && \
+    ln -sfn "$ROOT/variant-${variant}/README.md" "$stage/README.md"
+
+  # data.lua + info.json = GÉNÉRÉS (fichiers réels, jamais liés).
+  cat > "$stage/data.lua" <<'LUA'
+require("data-common")
+require("data-variant")
+LUA
+  cp info.json "$stage/info.json"
+  local base; base="$(mod_version "$variant")"
+  rewrite_info "$stage/info.json" "$name" "$base" "2.0" "2.0.0" "$variant"
+
+  # Le dossier stage (rempli de liens) est lui-même symlinké dans mods/.
+  rm -f "$mods/${name}_"*.zip
+  ln -sfn "$stage" "$mods/$name"
+  echo "Devlink : $mods/$name -> $stage (liens vers les sources)"
+  echo "→ Édite une source, puis en jeu : /c game.reload_mods()  (control-stage)."
+  echo "  Changement data-stage (prototypes/collision) : redémarrage complet requis."
+}
+
 unlink_dev() {
   local mods="$HOME/.factorio/mods"
   local variants=("${1:-}")
@@ -207,7 +278,8 @@ unlink_dev() {
 case "${1:-package}" in
   package) package ;;
   link)    link_dev "${2:-}" ;;
+  devlink) devlink "${2:-}" ;;
   unlink)  unlink_dev "${2:-}" ;;
   clean)   rm -rf "$DIST"; echo "dist/ supprimé." ;;
-  *) echo "Usage: $0 {package|link {bp|stc}|unlink [bp|stc]|clean}" >&2; exit 1 ;;
+  *) echo "Usage: $0 {package|link {bp|stc}|devlink {bp|stc}|unlink [bp|stc]|clean}" >&2; exit 2 ;;
 esac

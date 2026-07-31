@@ -99,6 +99,7 @@ local function refresh_chain_track(master)
   if not master then return end
   composite.rebuild_chain_track(master, chain_entities(master))
   composite.rebuild_chain_walls(master, chain_states(master))
+  composite.rebuild_deco_track(master, chain_states(master))  -- voie recyclage si deco
 end
 
 -- Migration : remplissage des champs manquants des vieux states et nettoyage
@@ -152,11 +153,17 @@ local function migrate_all()
       st.walls_static = st.walls_static or {}
       st.side_west = st.side_west or {}
       st.side_east = st.side_east or {}
+      -- Sol pavé (ajouté après) : posé si absent.
+      if not (st.floor_saved and #st.floor_saved > 0) then
+        st.floor_saved = {}
+        composite.lay_floor(st)
+      end
     else
       -- MAÎTRE : champs de production + enfants.
       st.templates = st.templates or {}
       st.queue = st.queue or {}
       st.extensions = st.extensions or {}
+      st.recycle_stops = st.recycle_stops or {}
       -- Champ st.source_mode supprimé (chaque variante est mono-source) ; on le
       -- purge des vieilles saves. st.stc_fuel reste inerte, laissé tel quel.
       st.source_mode = nil
@@ -169,12 +176,14 @@ local function migrate_all()
       composite.ensure_input(st)
       composite.ensure_combinator(st)
       if names.has_bpchest then composite.ensure_bpchest(st) end
-      -- Enceinte de murs (statique + colonnes) et 2e voie (déconstruction) :
-      -- ajoutées en place pour les fonderies d'avant cette version. ensure_walls
-      -- purge/repose les colonnes latérales (idempotent), le statique n'est posé
-      -- que s'il manque.
+      -- Sol pavé (ajouté après) : posé si absent.
+      if not (st.floor_saved and #st.floor_saved > 0) then
+        st.floor_saved = {}
+        composite.lay_floor(st)
+      end
+      -- Enceinte de murs (statique + colonnes). La 2e voie (recyclage) est gérée
+      -- par refresh_chain_track (rebuild_deco_track) selon st.deco, appelé plus bas.
       st.rails_deco = st.rails_deco or {}
-      -- composite.ensure_deco_track(st)  -- [STEP 1] rails désactivés
       composite.ensure_walls(st)
       -- Raccord ouest en RAIL_OVER (écrase le mur) : les vieilles fonderies
       -- l'avaient en rail normal. On le reconstruit au bon calque si la sortie
@@ -210,6 +219,7 @@ local function migrate_all()
     for _, w in ipairs(st.walls_static or {}) do ref(w) end
     for _, w in ipairs(st.side_west or {}) do ref(w) end
     for _, w in ipairs(st.side_east or {}) do ref(w) end
+    for _, s in ipairs(st.recycle_stops or {}) do ref(s) end
     ref(st.input)
     ref(st.bpchest)
     ref(st.signal)
@@ -219,8 +229,9 @@ local function migrate_all()
     for _, c in ipairs(st.inputs or {}) do ref(c) end
     for _, c in ipairs(st.combinators or {}) do ref(c) end
   end
-  local child_names = { names.rail, names.rail_over, names.input, names.signal,
-                        names.combinator, names.wall, names.gate }
+  local child_names = { names.rail, names.rail_over, names.rail_ext, names.input,
+                        names.signal, names.combinator, names.wall, names.gate,
+                        names.recycle_stop, names.block_signal, names.block_combi }
   if names.has_bpchest then child_names[#child_names + 1] = names.bpchest end
   -- Entités-déco de test (plus jamais référencées) : toute occurrence résiduelle
   -- est balayée comme orpheline (voir refresh_chain_sprites, désactivé).
@@ -429,6 +440,18 @@ script.on_event(defines.events.on_space_platform_mined_entity, on_removed,
 script.on_event(defines.events.on_entity_died, on_removed, removed_filters)
 script.on_event(defines.events.script_raised_destroy, on_removed)
 
+-- La gare de recyclage est SÉLECTIONNABLE (pour être ciblable dans un schedule),
+-- donc le joueur peut la renommer. On FIGE son nom : tout renommage manuel d'une
+-- gare de recyclage est annulé en re-forçant le backer_name. (by_script exclu pour
+-- ne pas boucler sur notre propre pose.)
+script.on_event(defines.events.on_entity_renamed, function(event)
+  if event.by_script then return end
+  local e = event.entity
+  if e and e.valid and e.name == names.recycle_stop then
+    e.backer_name = names.recycle_stop_name
+  end
+end)
+
 -- Clonage (éditeur, mods type Space Exploration) : l'entité clonée arrive
 -- sans enfants — on lui construit son propre composite.
 script.on_event(defines.events.on_entity_cloned, function(event)
@@ -605,6 +628,7 @@ script.on_nth_tick(TICK_INTERVAL, function()
       if names.has_bpchest then book_changed[un] = sync_templates(st) end
       process_foundry(st)
       builder.update_circuit(st)
+      builder.check_recycle(st)  -- déconstruit un train arrêté à la gare de recyclage
     end
   end
   -- Rafraîchit les fenêtres ouvertes : sections dynamiques à chaque tick, et
@@ -864,11 +888,17 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
       el.state = true
       return
     end
-    if side == "left" then st.exit_left = want else st.exit_right = want end
-    -- [STEP 1] rails désactivés → open_west/east neutralisés (rails en collision).
-    -- Recalcule les murs de TOUTE la chaîne : le côté ouest va sur le master, le
-    -- côté est sur le DERNIER module (pas sur le master s'il a une extension →
-    -- sinon un mur apparaît au milieu). refresh_chain_track gère master seul ET chaîne.
+    if side == "left" then
+      st.exit_left = want
+      -- Ouest : (re)pose ou retire le raccord de voie + signal ouest.
+      if want then composite.open_west(st) else composite.close_west(st) end
+    else
+      st.exit_right = want
+      -- Est : géré par refresh_chain_track (rebuild_chain_track appelle open_east/
+      -- close_east sur le dernier module selon exit_right).
+    end
+    -- Recalcule murs + voie de la chaîne : côté ouest sur le master, côté est sur
+    -- le DERNIER module. refresh_chain_track gère master seul ET chaîne.
     refresh_chain_track(st)
     return
   end
@@ -885,19 +915,16 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
     return
   end
 
-  -- Côtés de la voie de recyclage (indépendants de l'assemblage). Même garde :
-  -- pas de fermeture des deux côtés si la recyclage est active.
+  -- Côté d'entrée de la voie de recyclage = RADIO EXCLUSIF (cul-de-sac : une seule
+  -- entrée, gauche OU droite). Cliquer un côté l'active et désactive l'autre.
   if el.tags.tf_deco_side then
     local side = el.tags.tf_deco_side
-    local want = el.state
-    if st.deco and not want
-       and not (side == "left" and st.deco_right)
-       and not (side == "right" and st.deco_left) then
-      el.state = true
-      return
-    end
-    if side == "left" then st.deco_left = want else st.deco_right = want end
+    st.deco_left = (side == "left")
+    st.deco_right = (side == "right")
     refresh_chain_track(st)
+    -- Rafraîchit la fenêtre pour que l'autre radio se décoche visuellement.
+    gui.toggle_circuit(player, st)
+    gui.toggle_circuit(player, st)
     return
   end
 end)

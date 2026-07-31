@@ -19,6 +19,10 @@ local composite = {}
 
 local RAIL       = names.rail
 local RAIL_OVER  = names.rail_over  -- rail dessiné par-dessus le mur (sortie est)
+local RAIL_EXT   = names.rail_ext   -- rail hors bâtiment : sélectionnable, extensible
+local RECYCLE_STOP = names.recycle_stop  -- gare de recyclage (train-stop)
+local BLOCK_SIGNAL = names.block_signal  -- signal toujours rouge (anti-marche-arrière)
+local BLOCK_COMBI  = names.block_combi   -- combinateur qui ferme le signal de blocage
 local INPUT      = names.input
 local SIGNAL     = names.signal
 local COMBINATOR = names.combinator
@@ -30,9 +34,12 @@ local GATE       = names.gate
 -- sur le PARVIS ouest, dans la zone libre hors collision (x < -18) : de
 -- vraies entités que les bras et l'outil fil savent cibler. Un peu à l'écart
 -- de la voie de sortie (rangée +5) pour rester accessibles.
-local INPUT_OFFSET      = { -19.5, -1.5 }  -- coffre de fer (réserve)
-local COMBINATOR_OFFSET = { -19.5,  1.5 }  -- connecteur circuit
-local BPCHEST_OFFSET    = { -19.5, -3.5 }  -- coffre à blueprints
+-- Enfants du parvis ouest REMONTÉS dans la moitié HAUTE du hall (Y négatif) :
+-- les 2 voies occupent Y≈0..+2 (recyclage) et Y≈+4..+6 (assemblage), donc on
+-- libère cette bande. Les signaux, eux, restent près des voies qu'ils gouvernent.
+local INPUT_OFFSET      = { -19.5, -5.5 }  -- coffre de fer (réserve)
+local COMBINATOR_OFFSET = { -19.5, -3.5 }  -- connecteur circuit
+local BPCHEST_OFFSET    = { -19.5, -7.5 }  -- coffre à blueprints
 
 -- Les rails du jeu vivent sur les coordonnées IMPAIRES, alors que le
 -- bâtiment (build_grid_size = 2) est snappé sur les PAIRES — vérifié
@@ -50,6 +57,14 @@ end
 -- les deux. Géométrie issue de la maquette (blueprint) du joueur.
 local DECO_RAIL_Y = 1
 
+-- Sol PAVÉ (stone-path) posé sous la bande des 2 voies (Y=0..+6 : recyclage +
+-- assemblage + l'espace entre). Purement visuel/sol ; sur toute la largeur
+-- intérieure du module (X -17..+17). Le sol d'origine est mémorisé (floor_saved)
+-- pour être restauré à la dépose.
+local FLOOR_TILE = "stone-path"
+local FLOOR_X_MIN, FLOOR_X_MAX = -17, 18  -- +18 : le pavé va jusqu'au mur est (+19)
+local FLOOR_Y_MIN, FLOOR_Y_MAX = 0, 6
+
 -- Enceinte de murs : pourtour du footprint. Le bâtiment fait 40×22 (collision
 -- box [-18,-10.7]..[19.7,10.7]). Les murs vivent sur les tuiles ENTIÈRES : on
 -- pose une bande sur X entiers -18..+19 et Y entiers -10..+10, sur le seul
@@ -65,6 +80,37 @@ local WALL_Y_MIN, WALL_Y_MAX = -10, 10
 -- côté d'une sortie ACTIVE (voir rebuild_side).
 local GATE_X_WEST, GATE_X_EAST = -18, 19
 local GATE_DIRECTION = defines.direction.north
+
+-- Aménagement de la voie de RECYCLAGE, par côté d'entrée. Chaque côté est une
+-- LISTE d'éléments à poser (structure déclarative unifiée) :
+--  - kind="stop"   : gare de recyclage (train-stop nommé), au bout FERMÉ.
+--  - kind="signal" : rail-signal de blocage. `wired=true` → relié au combinateur
+--    du même côté et forcé ROUGE (close_signal). Les autres signaux sont juste
+--    posés (couvrent l'autre sens sur une voie bidirectionnelle).
+--  - kind="combi"  : constant-combinator qui émet signal-A=1 (alimente le signal
+--    wired via un fil rouge).
+-- La liste WEST est utilisée quand l'entrée est à GAUCHE (deco_left), EAST quand
+-- l'entrée est à DROITE (deco_right). X relatif au module porteur, Y au centre.
+-- Positions VALIDÉES en jeu par le joueur.
+local RECYCLE_ROAD = {
+  -- `anchor` = sur quel module poser l'élément : "entry" (module côté entrée) ou
+  -- "far" (module du bout fermé, opposé). Dans une chaîne : entrée gauche → entry=
+  -- master, far=dernière extension ; entrée droite → l'inverse.
+  west = {  -- entrée à GAUCHE : gare au fond EST, blocage à l'entrée OUEST
+    { kind = "stop",   anchor = "far",   x = 17, y = 2, dir = defines.direction.east },
+    { kind = "signal", anchor = "entry", x = -17, y = -1, dir = defines.direction.east, wired = true },
+    { kind = "signal", anchor = "entry", x = -17, y =  2, dir = defines.direction.west },
+    { kind = "combi",  anchor = "entry", x = -15, y = -1 },
+  },
+  east = {  -- entrée à DROITE : gare au fond OUEST, blocage à l'entrée EST
+    { kind = "stop",   anchor = "far",   x = -15, y = DECO_RAIL_Y - 2, dir = defines.direction.west },
+    { kind = "signal", anchor = "entry", x = 18, y =  2, dir = defines.direction.west, wired = true },
+    { kind = "signal", anchor = "entry", x = 18, y = -1, dir = defines.direction.east },
+    { kind = "combi",  anchor = "entry", x = 16, y = 2 },
+  },
+}
+
+
 
 -- Les DEUX voies traversant les colonnes latérales, chacune décrite par :
 --  - center : Y central du rail
@@ -249,6 +295,8 @@ function composite.build(entity)
     walls_static = {}, -- murs haut+bas (statiques, jamais retouchés)
     side_west = {},    -- colonne ouest : murs + portes (selon exit_left)
     side_east = {},    -- colonne est : murs + portes (selon exit_right / extension)
+    recycle_stops = {},-- gares de recyclage (train-stop, bord opposé à l'entrée)
+    floor_saved = {},  -- sol d'origine écrasé par les pavés (pour restauration)
     input = nil,       -- coffre de fer (réserve) sur le parvis
     bpchest = nil,     -- coffre à blueprints sur le parvis
     signal = nil,
@@ -280,11 +328,15 @@ function composite.build(entity)
   -- Voie interne du master : -13..+17 (impairs), zone d'assemblage. Le raccord
   -- ouest (-17,-15, qui traverse le mur) est posé séparément par open_west en
   -- RAIL_OVER, pour un seul chemin cohérent (défaut sortie gauche ouverte).
-  -- [STEP 1 — DÉCOUPLAGE] Rails DÉSACTIVÉS le temps de fiabiliser murs+portes.
-  -- On réactivera lay_rails / open_west une fois le comportement mur/porte validé.
-  -- lay_rails(state, entity, -13, 17)
-  -- composite.open_west(state)
-  -- lay_rails(state, entity, -17, 17, DECO_RAIL_Y, state.rails_deco)
+  -- Voie d'ASSEMBLAGE interne (-13..+17) + raccord ouest (open_west). Les tronçons
+  -- qui dépassent le bâtiment sont posés en RAIL_EXT (sélectionnables). La 2e voie
+  -- (RECYCLAGE) n'est PAS posée ici : elle n'existe que si state.deco est actif
+  -- (posée/retirée par rebuild_deco_track via refresh_chain_track).
+  lay_rails(state, entity, -13, 17)
+  composite.open_west(state)
+
+  -- Sol pavé sous la bande des voies.
+  composite.lay_floor(state)
 
   -- Enceinte de murs : statique (haut/bas) + colonnes latérales (murs pleins ou
   -- ouvertures+portes selon exit_left/exit_right). Voir ensure_walls_static /
@@ -322,6 +374,7 @@ function composite.build_extension(entity, master_un)
     walls_static = {},
     side_west = {},
     side_east = {},
+    floor_saved = {},
   }
   -- Rails de l'extension : on pose GÉNÉREUSEMENT de -23 à +17 (impairs). Le
   -- chevauchement à gauche comble le trou entre le dernier rail du module
@@ -329,6 +382,8 @@ function composite.build_extension(entity, master_un)
   -- déjà présent est réutilisé (lay_rails saute les positions occupées), donc
   -- pas de doublon.
   lay_rails(state, entity, -23, 17)
+  -- Sol pavé sous la bande des voies de l'extension.
+  composite.lay_floor(state)
   -- Par défaut non minable : l'appelant (refresh_chain_minable) rendra minable
   -- uniquement la dernière extension de la chaîne. Évite qu'une extension du
   -- milieu soit minable une fraction de temps avant le recalcul.
@@ -427,15 +482,18 @@ local function lay_east_rails(state, anchor)
   local surface = anchor.surface
   for x = EAST_RAIL_X_FROM, EAST_RAIL_X_TO, 2 do
     local pos = { anchor.position.x + x, anchor.position.y + RAIL_Y }
-    local has_over = false
+    -- Position sous le mur est (x<=18) → RAIL_OVER ; qui DÉPASSE (x>18) → RAIL_EXT
+    -- (sélectionnable, prolongeable à la main).
+    local proto = (x > 18) and RAIL_EXT or RAIL_OVER
+    local has_it = false
     for _, ex in ipairs(surface.find_entities_filtered({
       type = "straight-rail", position = pos, radius = 0.2 })) do
       if ex.direction % 8 == defines.direction.east % 8 then
-        if ex.name == RAIL_OVER then
-          has_over = true
+        if ex.name == RAIL_OVER or ex.name == RAIL_EXT then
+          has_it = true
         elseif ex.name == RAIL then
           -- Rail normal résiduel : le retirer (des rails du master si présent)
-          -- pour libérer la position au RAIL_OVER.
+          -- pour libérer la position.
           for i = #(state.rails or {}), 1, -1 do
             if state.rails[i] == ex then table.remove(state.rails, i) end
           end
@@ -443,8 +501,8 @@ local function lay_east_rails(state, anchor)
         end
       end
     end
-    if not has_over then
-      local r = place(anchor, RAIL_OVER, { x, RAIL_Y }, defines.direction.east)
+    if not has_it then
+      local r = place(anchor, proto, { x, RAIL_Y }, defines.direction.east)
       if r then state.rails_east[#state.rails_east + 1] = r end
     end
   end
@@ -650,8 +708,11 @@ function composite.open_west(state)
       end
     end
     if not occupied then
-      -- RAIL_OVER : le raccord ouest écrase le mur (symétrique de la sortie est).
-      local r = place(e, RAIL_OVER, { x, RAIL_Y }, defines.direction.east)
+      -- Position sous le mur (|x|<=18) → RAIL_OVER (interne, non-sélectionnable).
+      -- Position qui DÉPASSE le bâtiment (|x|>18) → RAIL_EXT (sélectionnable, pour
+      -- que le joueur prolonge la voie à la main).
+      local proto = (math.abs(x) > 18) and RAIL_EXT or RAIL_OVER
+      local r = place(e, proto, { x, RAIL_Y }, defines.direction.east)
       if r then state.rails[#state.rails + 1] = r end
     end
   end
@@ -709,12 +770,55 @@ function composite.ensure_walls_static(state)
   end
 end
 
+-- Pose le sol PAVÉ (FLOOR_TILE) sous la bande des voies d'UN module. Mémorise le
+-- sol écrasé dans state.floor_saved (liste de { name, x, y } en coords ABSOLUES)
+-- pour restauration à la dépose. Idempotent : posé une fois par module au build.
+function composite.lay_floor(state)
+  local e = state.entity
+  if not (e and e.valid) then return end
+  state.floor_saved = state.floor_saved or {}
+  local surf = e.surface
+  local set = {}
+  for x = FLOOR_X_MIN, FLOOR_X_MAX do
+    for y = FLOOR_Y_MIN, FLOOR_Y_MAX do
+      local ax, ay = e.position.x + x, e.position.y + y
+      local old = surf.get_tile(ax, ay)
+      if old and old.valid and old.name ~= FLOOR_TILE then
+        state.floor_saved[#state.floor_saved + 1] =
+          { name = old.name, x = ax, y = ay }
+        set[#set + 1] = { name = FLOOR_TILE, position = { ax, ay } }
+      end
+    end
+  end
+  if #set > 0 then surf.set_tiles(set) end
+end
+
+-- Restaure le sol d'origine mémorisé (à la dépose du module). `surface` peut être
+-- fourni si l'entité est déjà invalide (cas du minage) ; sinon on lit celle de
+-- l'entité. Les coords sauvegardées sont ABSOLUES (indépendantes de l'entité).
+function composite.remove_floor(state, surface)
+  if not (state.floor_saved and #state.floor_saved > 0) then return end
+  local surf = surface
+  if not surf then
+    local e = state.entity
+    surf = e and e.valid and e.surface
+  end
+  if not surf then state.floor_saved = nil; return end
+  local set = {}
+  for _, t in ipairs(state.floor_saved) do
+    set[#set + 1] = { name = t.name, position = { t.x, t.y } }
+  end
+  surf.set_tiles(set)
+  state.floor_saved = nil
+end
+
 -- VIDE une colonne latérale (side) : détruit la liste state[field] ET tout
--- mur/porte/rail PHYSIQUE de la colonne (balayage par zone). Marge X ±0.9 : une
--- GATE posée à x=-18 est snappée à -17.5 par le moteur — marge étroite = ratée.
+-- mur/porte PHYSIQUE de la colonne (balayage par zone). Marge X ±0.9 : une GATE
+-- posée à x=-18 est snappée à -17.5 par le moteur — marge étroite = ratée.
+-- NE TOUCHE PAS aux RAILS (gérés par lay_rails/open_west/lay_east_rails) : un rail
+-- de raccord à x=-17 sous la porte était mangé ici puis jamais reposé → trou.
 -- Utilisé pour purger avant de reposer, ET pour ouvrir un flanc (jonction de
--- chaîne : le côté est du master / le côté ouest d'une extension deviennent un
--- hall continu, sans paroi).
+-- chaîne : le côté est du master / le côté ouest d'une extension = hall continu).
 function composite.clear_side(state, side)
   local e = state.entity
   if not (e and e.valid) then return end
@@ -724,7 +828,7 @@ function composite.clear_side(state, side)
     if ent.valid then ent.destroy() end
   end
   for _, ent in ipairs(e.surface.find_entities_filtered({
-    name = { WALL, GATE, RAIL, RAIL_OVER },
+    name = { WALL, GATE },
     area = { { e.position.x + x - 0.9, e.position.y + WALL_Y_MIN + 1 },
              { e.position.x + x + 0.9, e.position.y + WALL_Y_MAX - 1 } },
   })) do
@@ -808,19 +912,141 @@ function composite.rebuild_chain_walls(master_state, chain)
       composite.clear_side(st, "east")
     end
   end
+  composite.rebuild_recycle_stops(master_state, chain)
+end
+
+-- Aménagement de la voie de RECYCLAGE (gare + signaux de blocage + combinateur),
+-- décrit par la structure déclarative RECYCLE_ROAD. `chain` = liste ordonnée des
+-- STATES (master en [1], dernier module en [#chain]). Selon le côté d'ENTRÉE actif
+-- (deco_left → road.west ; deco_right → road.east), on pose chaque élément de la
+-- liste sur son ancre ("entry" = module côté entrée ; "far" = bout fermé opposé).
+-- Tout est rangé dans master_state.recycle_stops (détruit avec la fonderie).
+function composite.rebuild_recycle_stops(master_state, chain)
+  if not (chain and #chain > 0) then return end
+  -- Purge les éléments existants.
+  for _, s in ipairs(master_state.recycle_stops or {}) do
+    if s.valid then s.destroy() end
+  end
+  master_state.recycle_stops = {}
+  if not master_state.deco then return end  -- voie de recyclage inactive
+
+  local function keep(s)
+    if s then master_state.recycle_stops[#master_state.recycle_stops + 1] = s end
+    return s
+  end
+
+  -- Pose une LISTE d'éléments (RECYCLE_ROAD.west / .east). `entry_state` = module
+  -- côté entrée, `far_state` = module du bout fermé.
+  local function place_road(elems, entry_state, far_state)
+    local wired_signal, combi  -- pour relier le signal wired au combinateur après
+    for _, el in ipairs(elems) do
+      local anchor = (el.anchor == "far") and far_state or entry_state
+      local e = anchor and anchor.entity
+      if e and e.valid then
+        local pos = { e.position.x + el.x, e.position.y + el.y }
+        if el.kind == "stop" then
+          local s = e.surface.create_entity({
+            name = RECYCLE_STOP, position = pos, direction = el.dir, force = e.force })
+          if s then s.destructible = false; s.backer_name = names.recycle_stop_name
+            keep(s) end
+        elseif el.kind == "signal" then
+          local sig = e.surface.create_entity({
+            name = BLOCK_SIGNAL, position = pos, direction = el.dir, force = e.force })
+          if sig then
+            sig.destructible = false; keep(sig)
+            if el.wired then wired_signal = sig end
+          end
+        elseif el.kind == "combi" then
+          combi = e.surface.create_entity({
+            name = BLOCK_COMBI, position = pos, force = e.force })
+          if combi then combi.destructible = false; keep(combi) end
+        end
+      end
+    end
+    -- Câblage : le combinateur émet signal-A=1, relié au signal `wired` (fil rouge),
+    -- qui est forcé ROUGE (close_signal quand signal-A > 0 → toujours vrai).
+    if wired_signal and combi then
+      local ccb = combi.get_or_create_control_behavior()
+      local sec = ccb and ccb.get_section(1)
+      if sec then
+        sec.set_slot(1, {
+          value = { type = "virtual", name = "signal-A", quality = "normal" }, min = 1 })
+      end
+      local sc = wired_signal.get_wire_connector(defines.wire_connector_id.circuit_red, true)
+      local cc = combi.get_wire_connector(defines.wire_connector_id.circuit_red, true)
+      if sc and cc then sc.connect_to(cc) end
+      local scb = wired_signal.get_or_create_control_behavior()
+      if scb then
+        scb.close_signal = true
+        scb.circuit_condition = {
+          comparator = ">", first_signal = { type = "virtual", name = "signal-A" },
+          constant = 0 }
+      end
+    end
+  end
+
+  -- Entrée à GAUCHE (deco_left) : entry = master (chain[1]), far = dernière ext.
+  if master_state.deco_left then
+    place_road(RECYCLE_ROAD.west, chain[1], chain[#chain])
+  end
+  -- Entrée à DROITE (deco_right) : entry = dernière ext, far = master.
+  if master_state.deco_right then
+    place_road(RECYCLE_ROAD.east, chain[#chain], chain[1])
+  end
 end
 
 -- (Les portes sont désormais gérées PAR CÔTÉ dans composite.rebuild_side : elles
 -- vivent dans state.side_west / state.side_east avec les murs de leur colonne.)
 
--- 2e voie (déconstruction) : (re)pose la voie sur DECO_RAIL_Y. Idempotent
--- (lay_rails saute une position déjà occupée). Pour les fonderies d'avant cette
--- version (migration en place).
-function composite.ensure_deco_track(state)
-  local e = state.entity
-  if not (e and e.valid) then return end
-  state.rails_deco = state.rails_deco or {}
-  lay_rails(state, e, -17, 17, DECO_RAIL_Y, state.rails_deco)
+-- 2e voie (RECYCLAGE) sur DECO_RAIL_Y : posée SEULEMENT si state.deco actif.
+-- Chaque module pose sa portion interne (-17..+17). La voie DÉBOUCHE (raccord
+-- externe qui sort du mur) uniquement du côté de l'ENTRÉE :
+--  - deco_left (entrée gauche) → raccord OUEST (-19/-21) sur le master ; la voie
+--    sort à gauche, le train y entre. Bout est fermé (gare à droite).
+--  - deco_right (entrée droite) → raccord EST (+19/+21) sur la dernière extension.
+-- Appelée par refresh_chain_track (ajout/retrait d'extension, bascule Config).
+function composite.rebuild_deco_track(master_state, chain)
+  if not (chain and #chain > 0) then return end
+  -- Repart de zéro (purge la voie déco) : sinon un raccord externe du mauvais côté
+  -- survit quand on change l'entrée. lay_rails saute une position déjà occupée.
+  for _, r in ipairs(master_state.rails_deco or {}) do
+    if r.valid then r.destroy() end
+  end
+  master_state.rails_deco = {}
+  if not master_state.deco then return end
+
+  -- Le côté FERMÉ (opposé à l'entrée) s'arrête 1 tuile plus tôt (-15 / +15) pour ne
+  -- pas coller au mur (effet de "sortie"). Le côté ENTRÉE va jusqu'à -17/+17 puis
+  -- le raccord externe. Un module au milieu garde -17..+17.
+  local n = #chain
+  for i, st in ipairs(chain) do
+    local e = st.entity
+    if e and e.valid then
+      -- Voie interne jusqu'aux bords -17..+17 (la gare du bout fermé est à ±17).
+      lay_rails(master_state, e, -17, 17, DECO_RAIL_Y, master_state.rails_deco)
+    end
+  end
+  -- Raccord EXTERNE (le bout qui dépasse le mur) du côté de l'entrée, en RAIL_EXT
+  -- (sélectionnable, prolongeable). -19/-21 ouest sur le master ; +19/+21 est sur
+  -- la dernière extension.
+  local function ext(anchor_state, xs)
+    local e = anchor_state.entity
+    if not (e and e.valid) then return end
+    for _, x in ipairs(xs) do
+      local pos = { e.position.x + x, e.position.y + DECO_RAIL_Y }
+      local occupied = false
+      for _, r in ipairs(e.surface.find_entities_filtered({
+        type = "straight-rail", position = pos, radius = 0.2 })) do
+        if r.direction % 8 == defines.direction.east % 8 then occupied = true break end
+      end
+      if not occupied then
+        local r = place(e, RAIL_EXT, { x, DECO_RAIL_Y }, defines.direction.east)
+        if r then master_state.rails_deco[#master_state.rails_deco + 1] = r end
+      end
+    end
+  end
+  if master_state.deco_left then ext(chain[1], { -19, -21 }) end
+  if master_state.deco_right then ext(chain[#chain], { 19, 21 }) end
 end
 
 -- Déverse le contenu d'un coffre au sol (pour ne rien perdre à la dépose).
@@ -902,6 +1128,10 @@ function composite.destroy(state)
   for _, r in ipairs(state.rails_deco or {}) do
     if r.valid then r.destroy() end
   end
+  -- Gares de recyclage.
+  for _, s in ipairs(state.recycle_stops or {}) do
+    if s.valid then s.destroy() end
+  end
   -- Enceinte de murs + portes (statique + 2 colonnes latérales) puis balayage par
   -- ZONE du footprint (au cas où une liste serait désynchronisée) → aucun mur/porte
   -- orphelin ne survit au minage.
@@ -912,7 +1142,7 @@ function composite.destroy(state)
   end
   if surf then
     for _, ent in ipairs(surf.find_entities_filtered({
-      name = { WALL, GATE },
+      name = { WALL, GATE, RECYCLE_STOP },
       area = { { cx + WALL_X_MIN - 1, cy + WALL_Y_MIN - 1 },
                { cx + WALL_X_MAX + 1, cy + WALL_Y_MAX + 1 } },
     })) do
@@ -923,6 +1153,9 @@ function composite.destroy(state)
   for _, e in ipairs(state.deco_entities or {}) do
     if e.valid then e.destroy() end
   end
+  -- Restaure le sol d'origine sous les pavés (surf capturé au début, l'entité
+  -- peut être déjà invalide au minage).
+  composite.remove_floor(state, surf)
 end
 
 return composite

@@ -19,6 +19,7 @@ local STOCK_TYPES = { "locomotive", "cargo-wagon", "fluid-wagon",
 -- Géométrie : voie interne sur la rangée +5, utilisable du mur ouest (-16)
 -- au bout des rails (+18). Tête du train à l'ouest, véhicules espacés de 7.
 local RAIL_Y = 5
+local DECO_RAIL_Y = 1   -- 2e voie (recyclage), doit coïncider avec composite
 local HEAD_X = -12
 local SPACING = 7
 -- Longueur max d'un train (nombre de véhicules) par MODULE. La capacité réelle
@@ -403,24 +404,21 @@ local function internal_track_area(state)
   }
 end
 
--- « Nettoyer » : détruit tout le matériel roulant présent sur la voie interne
--- (un train coincé qui ne part pas) et REMBOURSE son coût dans la réserve —
--- l'item de placement de chaque véhicule + le contenu de ses inventaires
--- (carburant des locos, munitions, cargaison éventuelle). Ce qui ne rentre pas
--- est déversé au sol. Retourne le nombre de véhicules retirés.
-function builder.clear_track(state)
-  local e = state.entity
-  if not (e and e.valid) then return 0 end
-  local vehicles = e.surface.find_entities_filtered({
-    type = STOCK_TYPES, area = internal_track_area(state) })
-  if #vehicles == 0 then return 0 end
-
+-- Détruit une liste de véhicules et REMBOURSE leur coût dans la réserve : l'item
+-- de placement de chaque véhicule + le contenu de tous ses inventaires (carburant,
+-- cargaison, munitions). Débordement déversé au sol (via builder.refund). Retourne
+-- le nombre de véhicules retirés. Cœur partagé par clear_track (voie d'assemblage)
+-- et check_recycle (voie de recyclage).
+function builder.scrap_vehicles(state, vehicles)
+  if not vehicles or #vehicles == 0 then return 0 end
   local refund = {}
   local function add(name, n)
     if name and n and n > 0 then refund[name] = (refund[name] or 0) + n end
   end
+  local count = 0
   for _, v in ipairs(vehicles) do
     if v.valid then
+      count = count + 1
       add(place_item_for(v.name), 1)  -- le véhicule lui-même
       -- Contenu de tous ses inventaires (fuel, cargo, munitions...).
       for i = 1, v.get_max_inventory_index() do
@@ -433,9 +431,57 @@ function builder.clear_track(state)
     end
   end
   for _, v in ipairs(vehicles) do if v.valid then v.destroy() end end
-  -- Rembourse via le même chemin que refund (réserve + spill au sol au débordement).
   builder.refund(state, { items = refund })
-  return #vehicles
+  return count
+end
+
+-- « Nettoyer » : détruit + rembourse tout le matériel roulant coincé sur la voie
+-- d'ASSEMBLAGE (bouton GUI pour débloquer la production). Retourne le nombre retiré.
+function builder.clear_track(state)
+  local e = state.entity
+  if not (e and e.valid) then return 0 end
+  return builder.scrap_vehicles(state, e.surface.find_entities_filtered({
+    type = STOCK_TYPES, area = internal_track_area(state) }))
+end
+
+-- Aire INTERNE de la voie de RECYCLAGE (rangée DECO_RAIL_Y). Bornes -17..+17
+-- (intérieur de l'enceinte) : un train sur le raccord EXTERNE (avant d'entrer)
+-- n'est pas capté ; seul un train engagé DANS le hall l'est. Le signal de blocage
+-- l'y garde piégé → immobile = à recycler.
+local function recycle_area(state)
+  local e = state.entity
+  local n_ext = (state.extensions and #state.extensions) or 0
+  return {
+    { e.position.x - 17, e.position.y + DECO_RAIL_Y - 1.5 },
+    { e.position.x + 17 + n_ext * MODULE_WIDTH, e.position.y + DECO_RAIL_Y + 1.5 },
+  }
+end
+
+-- Déconstruction : tout train IMMOBILE dans l'aire interne de la voie de recyclage
+-- est détruit + intégralement remboursé (tout le train). La voie est un cul-de-sac
+-- dédié, avec un signal de blocage à l'entrée : un train immobile à l'intérieur
+-- est forcément entré pour être recyclé (il ne peut plus repartir). On ne teste
+-- donc PAS train.station (le train s'arrête souvent AU SIGNAL rouge, pas à la
+-- gare). Un train de passage (en mouvement) ou resté sur le raccord externe
+-- (hors aire) est ignoré. Appelé par on_nth_tick. Retourne le nombre scrapé.
+function builder.check_recycle(state)
+  local e = state.entity
+  if not (state.deco and e and e.valid) then return 0 end
+  if #(state.recycle_stops or {}) == 0 then return 0 end
+  local scrapped = 0
+  local seen = {}  -- évite de traiter deux fois le même train (plusieurs wagons)
+  for _, v in ipairs(e.surface.find_entities_filtered({
+    type = STOCK_TYPES, area = recycle_area(state) })) do
+    if v.valid and v.train then
+      local t = v.train
+      local id = t.id
+      if not seen[id] and math.abs(t.speed) < 0.01 then
+        seen[id] = true
+        scrapped = scrapped + builder.scrap_vehicles(state, t.carriages)
+      end
+    end
+  end
+  return scrapped
 end
 
 -- Le bloc de sortie est-il libre ? Avec deux sorties possibles (ouest/est), il
