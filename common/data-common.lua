@@ -22,7 +22,6 @@ local SIGNAL     = names.signal
 local COMBINATOR = names.combinator
 local WALL       = names.wall
 local GATE       = names.gate
-local TRACK_DECO = names.track_deco
 
 -- Chemin graphique du mod courant (le nom de mod diffère par variante : on passe
 -- par le placeholder résolu à l'exécution du data stage).
@@ -112,7 +111,8 @@ rail_ext.hidden_in_factoriopedia = true
 rail_ext.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
                    "no-copy-paste" }
 
--- Réserve : un VRAI coffre de fer (visible, posé sur le parvis ouest).
+-- Réserve : un VRAI coffre de fer (visible, posé sur le parvis ouest), ÉLARGI en
+-- 1×2 VERTICAL (1 tuile de large, 2 de haut) pour accueillir la sortie de items.
 local input = table.deepcopy(data.raw["container"]["iron-chest"])
 input.name = INPUT
 input.minable = nil
@@ -124,6 +124,28 @@ input.inventory_size = 100
 input.circuit_wire_max_distance = 0
 input.hidden_in_factoriopedia = true
 input.selection_priority = 100
+-- Footprint 1×2 vertical : collision/selection étirées en Y (2 tuiles de haut).
+input.collision_box = { { -0.35, -1.35 }, { 0.35, 1.35 } }
+input.selection_box = { { -0.5, -1.5 }, { 0.5, 1.5 } }
+input.tile_height = 2
+input.tile_width = 1
+-- Étire le sprite du coffre sur 2 tuiles de haut (scale vertical + décalage). Le
+-- sprite iron-chest fait ~1 tuile ; on le rend 2× plus haut. Pas parfait mais
+-- lisible. (picture = RotatedAnimation/Sprite selon la version : on double la
+-- hauteur via scale et on garde le shift centré.)
+if input.picture and input.picture.layers then
+  for _, layer in ipairs(input.picture.layers) do
+    layer.scale = (layer.scale or 1)
+    -- On ne double PAS le sprite (déformerait l'art) : on le laisse en 1×1 centré
+    -- en HAUT du footprint, le bas restant vide visuellement mais collisionnable.
+    layer.shift = layer.shift or { 0, 0 }
+    layer.shift = { layer.shift[1], (layer.shift[2] or 0) - 0.5 }
+    if layer.hr_version and layer.hr_version.shift then
+      layer.hr_version.shift = { layer.hr_version.shift[1],
+                                 (layer.hr_version.shift[2] or 0) - 0.5 }
+    end
+  end
+end
 
 -- Signal de sortie : contrôle le bloc aval, rend le segment interne sortant.
 local signal = table.deepcopy(data.raw["rail-signal"]["rail-signal"])
@@ -204,7 +226,12 @@ local main = {
   -- collée au bâtiment ne se referme jamais (le bâtiment reste dans son rayon
   -- d'activation → déclencheur permanent). Les VRAIS MURS gardent l'enceinte
   -- étanche ; la bande libérée entre collision et murs est protégée par les murs.
-  collision_box = { { -16.0, -10.7 }, { 17.7, 10.7 } },
+  -- Collision rétrécie aussi en Y (−9.0/+9.0 au lieu de ±10.7) : les MURS haut/bas
+  -- (Y=±10, collision propre ±0.29 → bord interne à ±9.71) sont ainsi FRANCHEMENT
+  -- HORS de la collision du bâtiment. Sinon leur pose échoue (ils tombent DANS la
+  -- collision → create_entity refuse silencieusement). Comme en X pour les portes.
+  -- Les vrais murs gardent l'enceinte étanche.
+  collision_box = { { -16.0, -9.0 }, { 17.7, 9.0 } },
   selection_box = { { -20, -11 }, { 20, 11 } },
   selection_priority = 40,
   tile_width = 40,
@@ -221,20 +248,22 @@ local main = {
                     drain = "30kW" },
   energy_usage = "450kW",
   allowed_effects = {},
-  -- [TEMPORAIRE] Sprites du bâtiment DÉSACTIVÉS le temps de câbler les vraies
-  -- entités (murs, 2 voies, portes) : le sol + les portiques masquaient tout ce
-  -- qu'on veut voir. Bâtiment invisible pour l'instant. Les 2 couches (SOL
-  -- foundry-floor.png en lower-object + TOIT foundry-roof.png en
-  -- higher-object-above) seront REMISES une fois la structure entités validée.
+  -- Bandes déco (haut + bas) en WORKING_VISUALISATION du bâtiment : ancrées sur le
+  -- bâtiment (gros selection_box) → JAMAIS cullées, même caméra proche d'un bord (une
+  -- entité séparée, elle, se fait culler dès que son centre sort de l'écran). UNE
+  -- seule image par bande (pas de variante) : la jonction propre est obtenue par
+  -- l'ORDRE DE DESSIN — le module de GAUCHE se dessine par-dessus celui de droite,
+  -- son bord droit (fond) recouvrant les structures du bord gauche du voisin.
+  -- render_layer "lower-object" = SOUS les roues des wagons.
   graphics_set = {
-    -- working_visualisations = {
-    --   { always_draw = true, render_layer = "lower-object",
-    --     animation = { filename = GFX .. "foundry-floor.png", width = 1280,
-    --       height = 689, scale = 1, shift = { 0, -0.171875 } } },
-    --   { always_draw = true, render_layer = "higher-object-above",
-    --     animation = { filename = GFX .. "foundry-roof.png", width = 1280,
-    --       height = 689, scale = 1, shift = { 0, -0.171875 } } },
-    -- },
+    working_visualisations = {
+      { always_draw = true, render_layer = "lower-object",
+        animation = { filename = GFX .. "foundry-top.png", width = 1180,
+          height = 282, scale = 1, shift = { 0.8, -4.7 } } },
+      { always_draw = true, render_layer = "lower-object",
+        animation = { filename = GFX .. "foundry-bottom.png", width = 1180,
+          height = 112, scale = 1, shift = { 0.8, 8.5 } } },
+    },
     animation = {
       filename = "__core__/graphics/empty.png",
       width = 1,
@@ -243,44 +272,11 @@ local main = {
   },
 }
 
--- [DISCOVERY] Entité-déco de voie de jonction : une simple-entity-with-owner
--- INVISIBLE et INERTE, posée par la fonderie sur chaque module, dont le sprite
--- (variation pilotée au runtime via entity.graphics_variation) peint la voie
--- jusqu'aux bords selon le côté ouvert. render_layer "lower-object" = SOUS les
--- roues des wagons (comme le working_visualisation du bâtiment), contrairement à
--- LuaRendering qui dessine au-dessus des entités (roues masquées partout).
--- Variations base 1 : 1=right (bout ouest), 2=both (milieu), 3=left (bout est).
--- random_variation_on_create=false SINON Factorio tire une variation au hasard à
--- la pose et écrase notre graphics_variation.
-local function deco_variation(file)
-  return {
-    filename = GFX .. file,
-    width = 1280,
-    height = 689,
-    scale = 1,
-    shift = { 0, -0.171875 },
-    flags = { "no-crop" },
-  }
-end
-local track_deco = {
-  type = "simple-entity-with-owner",
-  name = TRACK_DECO,
-  render_layer = "lower-object",
-  random_variation_on_create = false,
-  collision_mask = { layers = {} },
-  pictures = {
-    deco_variation("foundry-link-right.png"),  -- 1
-    deco_variation("foundry-link-both.png"),   -- 2
-    deco_variation("foundry-link-left.png"),   -- 3
-  },
-}
-hide(track_deco)
-
 data:extend({
   { type = "recipe-category", name = names.dummy_cat },
 
   main, rail, rail_over, rail_ext, recycle_stop, block_signal, block_combi,
-  input, signal, combinator, wall, gate, track_deco,
+  input, signal, combinator, wall, gate,
 
   -- Vue d'ensemble : raccourci + touche perso ouvrant la fonderie de la surface.
   {

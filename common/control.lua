@@ -132,9 +132,8 @@ local function migrate_all()
     -- Carburant générique (0.7.x) : défaut false = comportement 0.5.x (respecte
     -- le carburant du blueprint), pour ne pas surprendre une save existante.
     if st.generic_fuel == nil then st.generic_fuel = false end
-    -- [DISCOVERY] Ancien champ chain_sprites = rendus LuaRendering (au-dessus des
-    -- roues) remplacés par des entités-déco (deco_entities). Purge les vieux
-    -- rendus d'une save de test, sinon ils resteraient affichés.
+    -- Ancien champ chain_sprites = rendus LuaRendering (au-dessus des roues)
+    -- d'anciennes versions de test. Purge-les, sinon ils resteraient affichés.
     if st.chain_sprites then
       for _, id in ipairs(st.chain_sprites) do
         if id and id.valid then id.destroy() end
@@ -233,9 +232,6 @@ local function migrate_all()
                         names.signal, names.combinator, names.wall, names.gate,
                         names.recycle_stop, names.block_signal, names.block_combi }
   if names.has_bpchest then child_names[#child_names + 1] = names.bpchest end
-  -- Entités-déco de test (plus jamais référencées) : toute occurrence résiduelle
-  -- est balayée comme orpheline (voir refresh_chain_sprites, désactivé).
-  if names.track_deco then child_names[#child_names + 1] = names.track_deco end
   for _, surface in pairs(game.surfaces) do
     for _, ent in pairs(surface.find_entities_filtered({
       name = child_names })) do
@@ -1246,3 +1242,4 @@ commands.add_command(names.mod .. "-debug", "État de la Train Foundry survolée
     (st.combinator and st.combinator.valid) and "ok" or "MANQUANT",
     signal, #st.templates, #st.queue, w and w.phase or "-"))
 end)
+

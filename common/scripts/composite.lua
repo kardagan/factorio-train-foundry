@@ -636,21 +636,6 @@ function composite.rebuild_chain_track(master_state, chain)
   else
     composite.close_east(master_state, chain[#chain])
   end
-  composite.refresh_chain_sprites(master_state, chain)
-end
-
--- [DISCOVERY v2 — sol tileable] L'entité-déco de voie de jonction n'est plus
--- nécessaire : la voie est désormais peinte BORD À BORD dans foundry-floor.png
--- (working_visualisation "lower-object", sous les roues) et se raccorde donc
--- naturellement d'un module à l'autre. On DÉSACTIVE la pose d'entités-déco (la
--- fonction ne fait plus que purger d'éventuelles entités laissées par un test
--- précédent). Prototype names.track_deco laissé en place au cas où on doive
--- revenir en arrière — à supprimer si le sol tileable est validé en jeu.
-function composite.refresh_chain_sprites(master_state, chain)
-  for _, e in ipairs(master_state.deco_entities or {}) do
-    if e.valid then e.destroy() end
-  end
-  master_state.deco_entities = {}
 end
 
 -- x relatif des rails de RACCORD ouest (le bout de voie interne qui dépasse le
@@ -759,15 +744,44 @@ function composite.ensure_walls_static(state)
   -- se chevauchent, dx≈38 < 40) et peut manger des murs statiques du master : on
   -- doit pouvoir les recréer au rebuild suivant (retrait d'extension).
   state.walls_static = {}
-  for x = WALL_X_MIN, WALL_X_MAX do
+  -- Le stone-wall (footprint 1×1) se snappe au CENTRE de case le plus proche =
+  -- coordonnée .5. Viser des positions ENTIÈRES faisait arrondir deux offsets
+  -- voisins (ex. -38 et -37) vers le MÊME centre (-37.5) → un mur sur deux perdu.
+  -- On vise donc directement les centres de case en .5, espacés de 1, sur toute
+  -- la largeur (bord gauche du bâtiment WALL_X_MIN à WALL_X_MAX).
+  for xi = WALL_X_MIN, WALL_X_MAX do
     for _, y in ipairs({ WALL_Y_MIN, WALL_Y_MAX }) do
-      local pos = { e.position.x + x, e.position.y + y }
+      -- position ABSOLUE du centre de case (floor + 0.5 garantit le .5 attendu)
+      local px = math.floor(e.position.x + xi) + 0.5
+      local py = math.floor(e.position.y + y) + 0.5
+      -- Réutilise le mur déjà en place (idempotent) ; sinon (re)pose via
+      -- create_entity (JAMAIS can_place_entity : trop strict sur sol pavé).
+      -- Recherche par aire d'UNE case (±0.4) centrée sur le vrai centre .5.
       local w = e.surface.find_entities_filtered({
-        name = WALL, position = pos, radius = 0.3 })[1]
-        or place(e, WALL, { x, y }, defines.direction.north)
+        name = WALL, area = { { px - 0.4, py - 0.4 }, { px + 0.4, py + 0.4 } },
+      })[1]
+      if not w then
+        w = e.surface.create_entity({
+          name = WALL, position = { px, py },
+          direction = defines.direction.north, force = e.force })
+        if w then w.destructible = false end
+      end
       if w then state.walls_static[#state.walls_static + 1] = w end
     end
   end
+end
+
+-- Patch de jonction d'UN module. La bande déco NORMALE (haut+bas) est un
+-- working_visualisation du bâtiment (toujours affiché). Ce patch n'existe QUE si le
+-- module a une extension à droite (`has_right`) : posé au centre du bâtiment (son
+-- sprite porte le shift +X vers le bord droit), il recouvre les structures qui se
+-- chevaucheraient à la jonction par la moitié droite de la variante (fond continu).
+-- has_right faux → on retire le patch éventuel (module redevenu dernier de chaîne).
+-- Les bandes déco (haut + bas) sont désormais des working_visualisations du
+-- prototype du bâtiment (une seule image, jamais cullées). La jonction propre est
+-- obtenue par l'ordre de dessin des working_vis, pas par une entité. Cette fonction
+-- ne fait donc plus rien (conservée pour ne pas toucher tous les appels).
+function composite.ensure_facade(state, has_right)
 end
 
 -- Pose le sol PAVÉ (FLOOR_TILE) sous la bande des voies d'UN module. Mémorise le
@@ -879,11 +893,13 @@ function composite.rebuild_side(state, side, flags_state)
   end
 end
 
--- (Re)construit tout le pourtour d'UN module isolé : statique + 2 colonnes.
+-- (Re)construit tout le pourtour d'UN module isolé : statique + 2 colonnes + déco.
+-- Module isolé = pas d'extension à droite → façade en variation 1 (normal).
 function composite.ensure_walls(state)
   composite.ensure_walls_static(state)
   composite.rebuild_side(state, "west")
   composite.rebuild_side(state, "east")
+  composite.ensure_facade(state, false)
 end
 
 -- Murs d'une CHAÎNE de modules. `chain` = liste ORDONNÉE des STATES (master en
@@ -911,6 +927,9 @@ function composite.rebuild_chain_walls(master_state, chain)
     else
       composite.clear_side(st, "east")
     end
+    -- Bandes déco : variation 2 (fond continu à droite) si CE module a un voisin à
+    -- droite (i < n), sinon variation 1 (normal, structures jusqu'au mur droit).
+    composite.ensure_facade(st, i < n)
   end
   composite.rebuild_recycle_stops(master_state, chain)
 end
@@ -1148,10 +1167,6 @@ function composite.destroy(state)
     })) do
       if ent.valid then ent.destroy() end
     end
-  end
-  -- [DISCOVERY] entités-déco de voie de chaîne
-  for _, e in ipairs(state.deco_entities or {}) do
-    if e.valid then e.destroy() end
   end
   -- Restaure le sol d'origine sous les pavés (surf capturé au début, l'entité
   -- peut être déjà invalide au minage).
