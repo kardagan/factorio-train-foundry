@@ -18,6 +18,7 @@ return {
   recycle_stop_name = "[entity=tfstc-foundry] Train Recycle",  -- backer_name (schedule)
   block_signal      = "tfstc-block-signal", -- signal toujours rouge (anti-marche-arrière)
   block_combi       = "tfstc-block-combi",  -- combinateur constant qui ferme le signal
+  deco_top    = "tfstc-deco-top",           -- bande déco haut (entité, ordre de dessin piloté)
   bpchest     = nil,                        -- pas de coffre à blueprints
   has_bpchest = false,
   dummy_cat   = "tfstc-dummy",

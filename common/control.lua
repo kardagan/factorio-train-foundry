@@ -219,6 +219,7 @@ local function migrate_all()
     for _, w in ipairs(st.side_west or {}) do ref(w) end
     for _, w in ipairs(st.side_east or {}) do ref(w) end
     for _, s in ipairs(st.recycle_stops or {}) do ref(s) end
+    ref(st.deco_top_ent)
     ref(st.input)
     ref(st.bpchest)
     ref(st.signal)
@@ -230,7 +231,8 @@ local function migrate_all()
   end
   local child_names = { names.rail, names.rail_over, names.rail_ext, names.input,
                         names.signal, names.combinator, names.wall, names.gate,
-                        names.recycle_stop, names.block_signal, names.block_combi }
+                        names.recycle_stop, names.block_signal, names.block_combi,
+                        names.deco_top }
   if names.has_bpchest then child_names[#child_names + 1] = names.bpchest end
   for _, surface in pairs(game.surfaces) do
     for _, ent in pairs(surface.find_entities_filtered({

@@ -248,18 +248,11 @@ local main = {
                     drain = "30kW" },
   energy_usage = "450kW",
   allowed_effects = {},
-  -- Bandes déco (haut + bas) en WORKING_VISUALISATION du bâtiment : ancrées sur le
-  -- bâtiment (gros selection_box) → JAMAIS cullées, même caméra proche d'un bord (une
-  -- entité séparée, elle, se fait culler dès que son centre sort de l'écran). UNE
-  -- seule image par bande (pas de variante) : la jonction propre est obtenue par
-  -- l'ORDRE DE DESSIN — le module de GAUCHE se dessine par-dessus celui de droite,
-  -- son bord droit (fond) recouvrant les structures du bord gauche du voisin.
-  -- render_layer "lower-object" = SOUS les roues des wagons.
+  -- Bande du BAS (carcasses) en working_visualisation du bâtiment : jamais cullée,
+  -- pas de couture gênante. Le HAUT est une ENTITÉ séparée (deco_top, plus bas) pour
+  -- piloter son ORDRE DE DESSIN (module gauche par-dessus le droit → jonction propre).
   graphics_set = {
     working_visualisations = {
-      { always_draw = true, render_layer = "lower-object",
-        animation = { filename = GFX .. "foundry-top.png", width = 1180,
-          height = 282, scale = 1, shift = { 0.8, -4.7 } } },
       { always_draw = true, render_layer = "lower-object",
         animation = { filename = GFX .. "foundry-bottom.png", width = 1180,
           height = 112, scale = 1, shift = { 0.8, 8.5 } } },
@@ -272,11 +265,41 @@ local main = {
   },
 }
 
+-- Bande déco du HAUT : ENTITÉ simple-entity-with-owner à DEUX variations, posée au
+-- centre du bâtiment. On la sort du working_visualisation pour piloter sa variation
+-- au runtime (graphics_variation, fiable) selon le voisin de droite :
+--   1 = normal   (foundry-top.png : structures jusqu'au bord ; module SEUL/dernier)
+--   2 = variante (foundry-top-variant.png : bord droit fondu en sol ; module suivi
+--       d'une EXTENSION → à la jonction, deux bords « fond » se rencontrent, pas de
+--       structures qui se chevauchent → couture propre).
+-- ANTI-CULLING : collision_box GÉANT (couvre tout le sprite) — le culling du rendu se
+-- base sur la collision_box/selection_box, PAS sur la taille du sprite ; sans lui,
+-- l'entité disparaît dès que son centre sort de l'écran (zoom près d'un bord).
+-- collision_mask VIDE → la grande box ne bloque NI trains NI joueur. render_layer
+-- "lower-object" = sous les roues. random_variation_on_create=false SINON une
+-- variation aléatoire à la pose écrase la nôtre.
+local deco_top = {
+  type = "simple-entity-with-owner",
+  name = names.deco_top,
+  render_layer = "lower-object",
+  random_variation_on_create = false,
+  collision_box = { { -18.5, -11 }, { 18.5, 11 } },
+  selection_box = { { -18.5, -11 }, { 18.5, 11 } },
+  collision_mask = { layers = {} },
+  pictures = {
+    { filename = GFX .. "foundry-top.png", width = 1180, height = 282,
+      scale = 1, shift = { 0.8, -4.7 }, flags = { "no-crop" } },
+    { filename = GFX .. "foundry-top-variant.png", width = 1180, height = 282,
+      scale = 1, shift = { 0.8, -4.7 }, flags = { "no-crop" } },
+  },
+}
+hide(deco_top)
+
 data:extend({
   { type = "recipe-category", name = names.dummy_cat },
 
   main, rail, rail_over, rail_ext, recycle_stop, block_signal, block_combi,
-  input, signal, combinator, wall, gate,
+  input, signal, combinator, wall, gate, deco_top,
 
   -- Vue d'ensemble : raccourci + touche perso ouvrant la fonderie de la surface.
   {

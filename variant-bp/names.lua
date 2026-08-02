@@ -18,6 +18,7 @@ return {
   recycle_stop_name = "[entity=train-foundry] Train Recycle",  -- backer_name (schedule)
   block_signal      = "tf-block-signal",    -- signal toujours rouge (anti-marche-arrière)
   block_combi       = "tf-block-combi",     -- combinateur constant qui ferme le signal
+  deco_top    = "tf-deco-top",             -- bande déco haut (entité, ordre de dessin piloté)
   bpchest     = "tf-blueprints",
   has_bpchest = true,
   dummy_cat   = "train-foundry-dummy",

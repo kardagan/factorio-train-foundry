@@ -29,6 +29,7 @@ local COMBINATOR = names.combinator
 local BPCHEST    = names.bpchest
 local WALL       = names.wall
 local GATE       = names.gate
+local DECO_TOP   = names.deco_top   -- bande déco haut (entité, ordre de dessin piloté)
 
 -- Réserve (coffre de fer), coffre à blueprints et connecteur circuit, posés
 -- sur le PARVIS ouest, dans la zone libre hors collision (x < -18) : de
@@ -296,6 +297,7 @@ function composite.build(entity)
     side_west = {},    -- colonne ouest : murs + portes (selon exit_left)
     side_east = {},    -- colonne est : murs + portes (selon exit_right / extension)
     recycle_stops = {},-- gares de recyclage (train-stop, bord opposé à l'entrée)
+    deco_top_ent = nil,-- bande déco haut (entité ; Y décalé selon voisin pour l'ordre)
     floor_saved = {},  -- sol d'origine écrasé par les pavés (pour restauration)
     input = nil,       -- coffre de fer (réserve) sur le parvis
     bpchest = nil,     -- coffre à blueprints sur le parvis
@@ -777,11 +779,33 @@ end
 -- sprite porte le shift +X vers le bord droit), il recouvre les structures qui se
 -- chevaucheraient à la jonction par la moitié droite de la variante (fond continu).
 -- has_right faux → on retire le patch éventuel (module redevenu dernier de chaîne).
--- Les bandes déco (haut + bas) sont désormais des working_visualisations du
--- prototype du bâtiment (une seule image, jamais cullées). La jonction propre est
--- obtenue par l'ordre de dessin des working_vis, pas par une entité. Cette fonction
--- ne fait donc plus rien (conservée pour ne pas toucher tous les appels).
+-- Bande déco du HAUT d'UN module : entité DECO_TOP posée au centre du bâtiment
+-- (le sprite porte son shift). Idempotente. L'ORDRE DE DESSIN (idée du joueur) est
+-- piloté par un décalage Y infime : un module suivi d'une extension à droite
+-- (`has_right`) est posé 0.05 tuile plus BAS → Factorio le dessine PAR-DESSUS le
+-- voisin (à render_layer égal, le plus au sud gagne), donc son bord droit (fond)
+-- recouvre les structures du bord gauche du voisin → jonction propre. Le décalage
+-- est compensé dans le shift interne (rien ne bouge à l'écran). Le BAS est un
+-- working_visualisation du bâtiment (géré ailleurs).
+-- Bande déco haut d'UN module : entité DECO_TOP posée au centre du bâtiment,
+-- idempotente. Sa VARIATION dépend du voisin de droite (fiable, contrairement à
+-- l'ordre de dessin) :
+--   has_right → variation 2 (variante : bord droit fondu en sol → jonction propre)
+--   sinon     → variation 1 (normal : structures jusqu'au bord)
 function composite.ensure_facade(state, has_right)
+  local e = state.entity
+  if not (e and e.valid) then return end
+  local surf = e.surface
+  local pos = { e.position.x, e.position.y }
+  if not (state.deco_top_ent and state.deco_top_ent.valid) then
+    state.deco_top_ent = surf.find_entities_filtered({
+      name = DECO_TOP, position = pos, radius = 0.6 })[1]
+      or surf.create_entity({ name = DECO_TOP, position = pos, force = e.force })
+    if state.deco_top_ent then state.deco_top_ent.destructible = false end
+  end
+  if state.deco_top_ent and state.deco_top_ent.valid then
+    state.deco_top_ent.graphics_variation = has_right and 2 or 1
+  end
 end
 
 -- Pose le sol PAVÉ (FLOOR_TILE) sous la bande des voies d'UN module. Mémorise le
@@ -927,8 +951,9 @@ function composite.rebuild_chain_walls(master_state, chain)
     else
       composite.clear_side(st, "east")
     end
-    -- Bandes déco : variation 2 (fond continu à droite) si CE module a un voisin à
-    -- droite (i < n), sinon variation 1 (normal, structures jusqu'au mur droit).
+    -- Bande déco haut : variation 2 (variante, bord droit en fond) si ce module a un
+    -- voisin à droite (i < n), sinon variation 1 (normal). graphics_variation est
+    -- fiable, contrairement à l'ordre de dessin.
     composite.ensure_facade(st, i < n)
   end
   composite.rebuild_recycle_stops(master_state, chain)
@@ -1159,9 +1184,13 @@ function composite.destroy(state)
       if ent.valid then ent.destroy() end
     end
   end
+  -- Bande déco haut de CE module.
+  if state.deco_top_ent and state.deco_top_ent.valid then
+    state.deco_top_ent.destroy()
+  end
   if surf then
     for _, ent in ipairs(surf.find_entities_filtered({
-      name = { WALL, GATE, RECYCLE_STOP },
+      name = { WALL, GATE, RECYCLE_STOP, DECO_TOP },
       area = { { cx + WALL_X_MIN - 1, cy + WALL_Y_MIN - 1 },
                { cx + WALL_X_MAX + 1, cy + WALL_Y_MAX + 1 } },
     })) do
