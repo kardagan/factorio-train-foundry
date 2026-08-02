@@ -395,12 +395,12 @@ end
 
 -- Détecte, à la pose de `entity`, la fonderie dont le bord EST est ACCOLÉ au
 -- bord OUEST de `entity` (voisin à l'ouest, même rangée). Deux modules accolés
--- ont leurs centres espacés selon leur collision : depuis que la collision est
--- rétrécie à -16/+17.7 (pour que les portes se ferment), les modules peuvent se
--- coller de dx≈34 (collisions qui se touchent) jusqu'à dx=38 (largeur visuelle
--- 40, halls parfaitement alignés). On accepte donc une plage LARGE (33..41) et on
--- prend le voisin le plus proche. Au-delà (dx >= 42), il y a un vrai espace : ce
--- ne sont plus des modules chaînés (sinon jonction = voie flottante sur le sol).
+-- ont leurs centres espacés d'EXACTEMENT dx=36 quand ils sont COLLÉS (jonction
+-- propre : sol/déco/voie continus, murs qui se touchent). Le bâtiment snappe sur la
+-- grille PAIRE (build_grid_size=2), donc les seules distances possibles sont 34, 36,
+-- 38… : à 38+ il reste un TROU visible (sol martien, voie flottante). On n'accepte
+-- donc l'accolage que TRÈS PRÈS de 36 (35..37) — au-delà ce n'est pas une extension,
+-- la pose est refusée + remboursée (voir on_built). 34 exclu aussi (chevauchement).
 function composite.adjacent_west(entity, foundries)
   local px, py = entity.position.x, entity.position.y
   local best, best_dx
@@ -408,7 +408,7 @@ function composite.adjacent_west(entity, foundries)
     local e = st.entity
     if e and e.valid and e ~= entity and e.surface == entity.surface then
       local dx = px - e.position.x  -- >0 si le voisin est à l'OUEST
-      if math.abs(e.position.y - py) < 1.0 and dx >= 33 and dx <= 41 then
+      if math.abs(e.position.y - py) < 1.0 and dx >= 35 and dx <= 37 then
         if not best_dx or dx < best_dx then
           best, best_dx = st, dx
         end
