@@ -48,6 +48,8 @@ local function ensure_storage()
   -- unit_number -> { entity, rails = {}, inputs = {}, signal,
   --                  templates = {}, queue = {}, work = nil }
   storage.foundries = storage.foundries or {}
+  -- registration_number -> { renders } aperçus dessinés sur les GHOSTS posés.
+  storage.ghost_previews = storage.ghost_previews or {}
   -- player_index -> { cursor, chart } rendus de l'aperçu de placement. Recréé au besoin
   -- (perdu au rechargement). Voir le bloc APERÇU.
   storage.preview_ids = storage.preview_ids or {}
@@ -369,6 +371,29 @@ local function refresh_all_previews()
   for _, player in pairs(game.players) do refresh_preview(player) end
 end
 
+-- APERÇU sur un GHOST posé (Alt+clic / drones en attente) : le ghost natif n'affiche
+-- que le graphics_set du prototype (la bande bas). On dessine l'image d'ensemble à SA
+-- position (fixe), en "game" + "chart", effacée quand le ghost disparaît (construit
+-- ou annulé) via register_on_object_destroyed.
+-- storage.ghost_previews[registration_number] = { renders = { id, id }, unit = un }
+local function draw_ghost_preview(ghost)
+  if not (ghost and ghost.valid) then return end
+  storage.ghost_previews = storage.ghost_previews or {}
+  local pos = ghost.position
+  local function at(mode)
+    return rendering.draw_sprite({
+      sprite = PREVIEW_SPRITE,
+      target = { pos.x + PREVIEW_OFF_X, pos.y + PREVIEW_OFF_Y },
+      surface = ghost.surface,
+      render_mode = mode,
+      tint = { r = 0.6, g = 0.8, b = 1, a = 0.55 },  -- teinte bleutée « ghost »
+      x_scale = PREVIEW_SCALE, y_scale = PREVIEW_SCALE,
+    })
+  end
+  local reg = script.register_on_object_destroyed(ghost)
+  storage.ghost_previews[reg] = { renders = { at("game"), at("chart") } }
+end
+
 script.on_init(function()
   ensure_storage()
   refresh_all_previews()
@@ -391,6 +416,16 @@ if defines.events.on_player_cursor_ghost_changed then
     refresh_preview(game.get_player(event.player_index))
   end)
 end
+
+-- Ghost détruit (construit pour de vrai, annulé, ou miné) → efface son aperçu.
+script.on_event(defines.events.on_object_destroyed, function(event)
+  local gp = storage.ghost_previews and storage.ghost_previews[event.registration_number]
+  if not gp then return end
+  for _, id in ipairs(gp.renders) do
+    if id and id.valid then id.destroy() end
+  end
+  storage.ghost_previews[event.registration_number] = nil
+end)
 
 -- ----------------------------------------------------------------------------
 -- Cycle de vie : pose / dépose
@@ -447,6 +482,13 @@ local function on_built(event)
   ensure_storage()
   local e = event.entity or event.created_entity
   if not (e and e.valid) then return end
+  -- GHOST de fonderie (Alt+clic / plan robot) : dessine l'aperçu d'ensemble à sa
+  -- position (le ghost natif ne montre que la bande bas). Effacé quand le ghost
+  -- devient réel ou est annulé (on_object_destroyed).
+  if e.type == "entity-ghost" and e.ghost_name == MAIN then
+    draw_ghost_preview(e)
+    return
+  end
   if e.name ~= MAIN then return end
 
   -- Un module accolé à l'OUEST d'une fonderie existante devient une EXTENSION
@@ -547,7 +589,12 @@ local function on_removed(event)
   storage.foundries[e.unit_number] = nil
 end
 
-local built_filters = { { filter = "name", name = MAIN } }
+-- Filtre : la vraie fonderie (name=MAIN) OU son GHOST (ghost_name=MAIN) — plusieurs
+-- entrées = OR. on_built gère les deux cas (ghost → aperçu, réel → composite).
+local built_filters = {
+  { filter = "name", name = MAIN },
+  { filter = "ghost_name", name = MAIN },
+}
 script.on_event(defines.events.on_built_entity, on_built, built_filters)
 script.on_event(defines.events.on_robot_built_entity, on_built, built_filters)
 script.on_event(defines.events.on_space_platform_built_entity, on_built,
