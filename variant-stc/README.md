@@ -33,4 +33,9 @@ sends them off onto your rail network on their own — no blueprint needed.
 - **Exit sides** (left/right), **chainable extensions** for longer trains, **circuit connector**,
   **clear stuck train** button, and Factoriopedia on component/fuel slots.
 - **Remote control**: a shortcut-bar button (and Ctrl+Alt+F) opens the foundry from anywhere.
-- One foundry per planet. Vanilla, Space Age and Nullius compatible.
+- One foundry per planet.
+
+## Credits
+
+The reserve-chest sprite is the "tall steel chest" graphic from the **Wide Containers
+Assets** mod by **Lebothegizebo**, used under the MIT License. Thanks!

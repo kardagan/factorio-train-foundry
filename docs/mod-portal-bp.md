@@ -80,4 +80,9 @@ blueprint with no fuel always uses this generic mode — nothing to honour.
   components it still needs.
 - **Remote control.** A shortcut-bar button (or CTRL+ALT+F) opens the foundry's
   window from anywhere — no need to walk to it. One foundry (chain) per planet.
-- **Compatible** with vanilla, Space Age and Nullius.
+- **Compatible** with vanilla and Space Age.
+
+### Credits
+
+The reserve-chest sprite is the "tall steel chest" graphic from the **Wide
+Containers Assets** mod by **Lebothegizebo**, used under the MIT License. Thanks!

@@ -97,8 +97,9 @@ for d in data.get("dependencies", []):
     s = d.strip()
     if s.startswith("base"):
         deps.append(f"base >= {base_min}")
-    elif "smart-train-combinator" in s or "nullius" in s:
-        pass  # nullius: retiré (aucun intérêt). STC: ré-ajouté seulement pour stc.
+    elif ("smart-train-combinator" in s or "nullius" in s
+          or "wide-containers-assets" in s):
+        pass  # nullius/wide-containers-assets retirés ; STC ré-ajouté ci-dessous.
     else:
         deps.append(d)
 if variant == "stc":

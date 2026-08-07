@@ -129,23 +129,25 @@ input.collision_box = { { -0.35, -1.35 }, { 0.35, 1.35 } }
 input.selection_box = { { -0.5, -1.5 }, { 0.5, 1.5 } }
 input.tile_height = 2
 input.tile_width = 1
--- Étire le sprite du coffre sur 2 tuiles de haut (scale vertical + décalage). Le
--- sprite iron-chest fait ~1 tuile ; on le rend 2× plus haut. Pas parfait mais
--- lisible. (picture = RotatedAnimation/Sprite selon la version : on double la
--- hauteur via scale et on garde le shift centré.)
-if input.picture and input.picture.layers then
-  for _, layer in ipairs(input.picture.layers) do
-    layer.scale = (layer.scale or 1)
-    -- On ne double PAS le sprite (déformerait l'art) : on le laisse en 1×1 centré
-    -- en HAUT du footprint, le bas restant vide visuellement mais collisionnable.
-    layer.shift = layer.shift or { 0, 0 }
-    layer.shift = { layer.shift[1], (layer.shift[2] or 0) - 0.5 }
-    if layer.hr_version and layer.hr_version.shift then
-      layer.hr_version.shift = { layer.hr_version.shift[1],
-                                 (layer.hr_version.shift[2] or 0) - 0.5 }
-    end
-  end
-end
+-- Sprite du coffre 1×2 VERTICAL : le sprite « tall steel chest » du mod « Wide
+-- Containers Assets » de Lebothegizebo (licence MIT), COPIÉ dans nos graphics
+-- (foundry-input.png + ombre) — pas de dépendance (le mod n'existe pas en 2.1).
+-- Crédit dans LICENSE et les README. Déclaration calquée sur wide-steel-chests
+-- (vertical_picture) : sprite + ombre, scale 0.5, shift by_pixel (÷32).
+input.picture = {
+  layers = {
+    {
+      filename = GFX .. "foundry-input.png",
+      priority = "extra-high", scale = 0.5, width = 64, height = 138,
+      shift = { -0.25 / 32, -2 / 32 },
+    },
+    {
+      filename = GFX .. "foundry-input-shadow.png",
+      priority = "extra-high", scale = 0.5, width = 110, height = 108,
+      shift = { 12.25 / 32, 5.25 / 32 }, draw_as_shadow = true,
+    },
+  },
+}
 
 -- Signal de sortie : contrôle le bloc aval, rend le segment interne sortant.
 local signal = table.deepcopy(data.raw["rail-signal"]["rail-signal"])

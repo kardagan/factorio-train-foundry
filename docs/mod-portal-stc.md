@@ -84,4 +84,9 @@ delivered by your logistics.
   and refunds its cost.
 - **Remote control.** A shortcut-bar button (or CTRL+ALT+F) opens the foundry
   from anywhere. One foundry (chain) per planet.
-- **Compatible** with vanilla, Space Age and Nullius.
+- **Compatible** with vanilla and Space Age.
+
+### Credits
+
+The reserve-chest sprite is the "tall steel chest" graphic from the **Wide
+Containers Assets** mod by **Lebothegizebo**, used under the MIT License. Thanks!

@@ -39,9 +39,9 @@ local DECO_TOP   = names.deco_top   -- bande déco haut (entité, ordre de dessi
 -- Enfants du parvis ouest REMONTÉS dans la moitié HAUTE du hall (Y négatif) :
 -- les 2 voies occupent Y≈0..+2 (recyclage) et Y≈+4..+6 (assemblage), donc on
 -- libère cette bande. Les signaux, eux, restent près des voies qu'ils gouvernent.
-local INPUT_OFFSET      = { -19.5, -5.5 }  -- coffre de fer (réserve)
-local COMBINATOR_OFFSET = { -19.5, -3.5 }  -- connecteur circuit
-local BPCHEST_OFFSET    = { -19.5, -7.5 }  -- coffre à blueprints
+local INPUT_OFFSET      = { -19.5, -5.5 }  -- coffre de fer (réserve, 1×2 vertical)
+local COMBINATOR_OFFSET = { -19.5, -1.5 }  -- connecteur circuit (descendu de 2)
+local BPCHEST_OFFSET    = { -19.5, -8.5 }  -- coffre à blueprints (monté de 1)
 
 -- Les rails du jeu vivent sur les coordonnées IMPAIRES, alors que le
 -- bâtiment (build_grid_size = 2) est snappé sur les PAIRES — vérifié
