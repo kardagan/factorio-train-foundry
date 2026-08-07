@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 #
-# build.sh — packaging Train Foundry en DEUX variantes (BP / STC), chacune pour
-# Factorio 2.0 ET 2.1, depuis une SOURCE UNIQUE.
+# build.sh — packaging Train Foundry en DEUX variantes (BP / STC), pour
+# Factorio 2.1, depuis une SOURCE UNIQUE.
 #
-# Deux dimensions :
-#   - VARIANTE : "bp" (train-foundry, coffre à blueprints) ou "stc"
-#     (train-foundry-stc, modèles Smart Train Combinator, pas de coffre BP).
-#   - CANAL de jeu : 2.0 et 2.1 (seul info.json diffère : factorio_version + base).
+# VARIANTE : "bp" (train-foundry, coffre à blueprints) ou "stc"
+#   (train-foundry-stc, modèles Smart Train Combinator, pas de coffre BP).
 #
 # Assemblage d'un paquet = common/ (code partagé) + variant-<v>/ (spécifique),
 # aplatis à la racine du zip, plus un data.lua généré qui require les deux
@@ -16,12 +14,11 @@
 # Chaque paquet est AUTONOME : aucun mod "core" à installer. Le joueur prend
 # train-foundry (BP) et/ou train-foundry-stc.
 #
-# Convention de version (identique à avant) :
-#   info.json porte le semver canonique = la release Factorio 2.0.
-#   La release 2.1 reprend le même code avec le MINOR +1.
+# Version : le champ `version` de names.lua est publié tel quel (factorio_version
+#   2.1). La 2.0 n'est plus maintenue (branche factorio-2.0 pour un éventuel hotfix).
 #
 # Usage :
-#   ./build.sh package            # 4 zips : bp 2.0/2.1 + stc 2.0/2.1
+#   ./build.sh package            # 2 zips : bp + stc (Factorio 2.1)
 #   ./build.sh link bp            # lien dev de la variante BP dans ~/.factorio/mods
 #   ./build.sh link stc           # lien dev de la variante STC
 #   ./build.sh unlink [bp|stc]    # retire le(s) lien(s) dev
@@ -50,14 +47,15 @@ SHARED=(
   locale
 )
 
-# Cibles de canal : "gamever:base_min:minor_offset"
+# Cible de canal : "gamever:base_min:minor_offset". Le mod ne cible plus que
+# Factorio 2.1 (la 2.0 n'est plus maintenue, sauf crash — voir la branche factorio-2.0).
+# offset 0 : la version publiée = le champ `version` de names.lua, sans dérivation.
 TARGETS=(
-  "2.0:2.0.0:0"
-  "2.1:2.1.0:1"
+  "2.1:2.1.0:0"
 )
 
-# Semver canonique d'une VARIANTE = champ `version` de son names.lua (canal 2.0 ;
-# le build dérive +1 pour le 2.1). Lu par regex (pas d'interpréteur Lua ici).
+# Semver d'une VARIANTE = champ `version` de son names.lua, publié tel quel.
+# Lu par regex (pas d'interpréteur Lua ici).
 mod_version() {
   local variant="$1"
   python3 - "variant-${variant}/names.lua" <<'PY'
@@ -70,8 +68,8 @@ print(m.group(1))
 PY
 }
 
-# Réécrit name + version + factorio_version + borne base d'un info.json, et
-# n'ajoute la dépendance optionnelle smart-train-combinator QUE pour la variante stc.
+# Réécrit name + version + factorio_version + borne base d'un info.json. Retire la
+# dépendance nullius, et ajoute smart-train-combinator en OBLIGATOIRE pour la variante stc.
 rewrite_info() {
   local file="$1" name="$2" modver="$3" gamever="$4" base_min="$5" variant="$6"
   python3 - "$file" "$name" "$modver" "$gamever" "$base_min" "$variant" <<'PY'
@@ -99,12 +97,14 @@ for d in data.get("dependencies", []):
     s = d.strip()
     if s.startswith("base"):
         deps.append(f"base >= {base_min}")
-    elif "smart-train-combinator" in s:
-        pass  # retiré ici, ré-ajouté seulement pour stc ci-dessous
+    elif "smart-train-combinator" in s or "nullius" in s:
+        pass  # nullius: retiré (aucun intérêt). STC: ré-ajouté seulement pour stc.
     else:
         deps.append(d)
 if variant == "stc":
-    deps.append("(?) smart-train-combinator >= 1.6.0")
+    # Dépendance OBLIGATOIRE (pas optionnelle) : la variante STC lit les modèles via
+    # remote.call vers smart-train-combinator ; sans lui elle n'a aucun sens.
+    deps.append("smart-train-combinator >= 1.6.0")
 data["dependencies"] = deps
 with open(path, "w") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
@@ -182,8 +182,8 @@ link_dev() {
   local stage="$DIST/link-${variant}"
   rm -rf "$stage"
   assemble "$variant" "$stage"
-  # info.json en factorio_version 2.0 (chargeable en jeu 2.0), name = variante.
-  rewrite_info "$stage/info.json" "$name" "$base" "2.0" "2.0.0" "$variant"
+  # info.json en factorio_version 2.1, name = variante.
+  rewrite_info "$stage/info.json" "$name" "$base" "2.1" "2.1.0" "$variant"
 
   rm -f "$mods/${name}_"*.zip
   ln -sfn "$stage" "$mods/$name"
@@ -201,10 +201,7 @@ link_dev() {
 # exige toujours un REDÉMARRAGE COMPLET de Factorio.
 devlink() {
   local variant="${1:-}"
-  local channel="${2:-2.0}"   # canal de jeu ciblé : 2.0 (défaut) ou 2.1
-  [[ -n "$variant" ]] || { echo "Usage: $0 devlink {bp|stc} [2.0|2.1]" >&2; exit 2; }
-  [[ "$channel" == "2.0" || "$channel" == "2.1" ]] || {
-    echo "Canal inconnu: $channel (attendu 2.0 ou 2.1)" >&2; exit 2; }
+  [[ -n "$variant" ]] || { echo "Usage: $0 devlink {bp|stc}" >&2; exit 2; }
   local name; name="$(mod_name "$variant")"
   [[ "$name" != "?" ]] || { echo "Variante inconnue: $variant" >&2; exit 2; }
   local mods="$HOME/.factorio/mods"
@@ -256,13 +253,9 @@ require("data-variant")
 LUA
   cp info.json "$stage/info.json"
   local base; base="$(mod_version "$variant")"
-  # Résout gamever + base_min + offset depuis TARGETS selon le canal demandé, puis
-  # dérive le semver (minor +offset) — même logique que package.
-  local gamever base_min offset target
-  for target in "${TARGETS[@]}"; do
-    IFS=':' read -r gamever base_min offset <<<"$target"
-    [[ "$gamever" == "$channel" ]] && break
-  done
+  # Cible unique 2.1 (TARGETS[0]) : gamever + base_min + offset.
+  local gamever base_min offset
+  IFS=':' read -r gamever base_min offset <<<"${TARGETS[0]}"
   local modver; modver="$(bump_minor "$base" "$offset")"
   rewrite_info "$stage/info.json" "$name" "$modver" "$gamever" "$base_min" "$variant"
 
@@ -289,7 +282,7 @@ unlink_dev() {
 case "${1:-package}" in
   package) package ;;
   link)    link_dev "${2:-}" ;;
-  devlink) devlink "${2:-}" "${3:-2.0}" ;;
+  devlink) devlink "${2:-}" ;;
   unlink)  unlink_dev "${2:-}" ;;
   clean)   rm -rf "$DIST"; echo "dist/ supprimé." ;;
   *) echo "Usage: $0 {package|link {bp|stc}|devlink {bp|stc}|unlink [bp|stc]|clean}" >&2; exit 2 ;;

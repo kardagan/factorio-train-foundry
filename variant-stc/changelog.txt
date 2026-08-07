@@ -1,4 +1,25 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.0.0
+Date: 2026-08-07
+  Info:
+    - The mod now targets Factorio 2.1 only. Factorio 2.0 is no longer maintained.
+    - Smart Train Combinator is now a required dependency (it was optional): the foundry reads train
+      models from it, so it makes no sense without it.
+  Features:
+    - The building is now made of real entities: stone walls with gates around the perimeter, two
+      internal tracks (assembly and recycling), and decorative bands (industrial top, scrap bottom).
+    - Recycling track (optional, per-foundry): a dead-end second track with a "Train Recycle" stop.
+      A train left on it is destroyed and fully refunded (vehicles, fuel and cargo) into the buffer.
+    - Rich placement preview (2.1): while holding the foundry item (real or ghost), a full picture of
+      the building follows the cursor in both the game view and the map, so you can see exactly where
+      the tracks and walls will land before placing. It also shows on a placed ghost.
+  Changes:
+    - Extensions only snap to a foundry placed at the exact adjacency distance; placing one too far is
+      refused and refunded.
+  Bugfixes:
+    - Top and bottom walls of the enclosure no longer go missing on reload.
+
+---------------------------------------------------------------------------------------------------
 Version: 0.1.0
 Date: 2026-07-25
   Info:

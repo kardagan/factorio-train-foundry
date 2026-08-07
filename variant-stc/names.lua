@@ -3,7 +3,7 @@
 -- installé (coexistence « 1 de chaque par surface »). Pas de coffre à blueprints.
 return {
   source      = "stc",
-  version     = "0.1.0",                   -- nouveau mod : repart de zéro (canal 2.0 ; +1 pour 2.1)
+  version     = "1.0.0",                   -- semver publié (mod Factorio 2.1 uniquement)
   mod         = "train-foundry-stc",       -- nom du mod (chemin __<mod>__/graphics)
   building    = "tfstc-foundry",
   rail        = "tfstc-rail",
