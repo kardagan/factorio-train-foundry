@@ -221,13 +221,23 @@ recycle_stop.flags = { "not-blueprintable", "not-deconstructable",
 local block_signal = table.deepcopy(data.raw["rail-signal"]["rail-signal"])
 block_signal.name = BLOCK_SIGNAL
 hide(block_signal)
+block_signal.draw_circuit_wires = false
 
 -- Combinateur constant caché qui alimente le réseau de circuit du signal de
 -- blocage (il faut un fil pour que la condition de fermeture soit évaluée).
+-- INVISIBLE : c'est une entité purement technique (interne à la voie de recyclage),
+-- on vide son sprite pour ne pas la voir au sol. hide() ne cache que la map/
+-- factoriopedia, pas le rendu → on écrase sprites/activity_led par une image vide.
 local block_combi = table.deepcopy(
   data.raw["constant-combinator"]["constant-combinator"])
 block_combi.name = BLOCK_COMBI
 hide(block_combi)
+local EMPTY_SPRITE = {
+  filename = "__core__/graphics/empty.png", width = 1, height = 1,
+}
+block_combi.sprites = EMPTY_SPRITE
+block_combi.activity_led_sprites = EMPTY_SPRITE
+block_combi.draw_circuit_wires = false
 
 -- ============================================================================
 -- Bâtiment principal (identique aux deux variantes, seul le name diffère)
