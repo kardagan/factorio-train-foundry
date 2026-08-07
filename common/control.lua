@@ -229,7 +229,7 @@ local function migrate_all()
     for _, w in ipairs(st.side_east or {}) do ref(w) end
     for _, s in ipairs(st.recycle_stops or {}) do ref(s) end
     ref(st.deco_top_ent)
-    ref(st.blocker)
+    for _, b in ipairs(st.blockers or {}) do ref(b) end
     ref(st.input)
     ref(st.bpchest)
     ref(st.signal)
@@ -492,6 +492,21 @@ local function on_built(event)
   end
   if e.name ~= MAIN then return end
 
+  -- Refus si l'EMPRISE contient de l'eau : la collision_box (bande haute) porte déjà
+  -- water_tile, mais elle ne couvre pas tout le footprint (bas/centre). On vérifie
+  -- donc l'emprise COMPLÈTE (40×22 autour du centre, PAS e.bounding_box qui vaut la
+  -- collision_box réduite) et on rembourse. Il faut remblayer avant de poser.
+  do
+    local px, py = e.position.x, e.position.y
+    local water = e.surface.count_tiles_filtered({
+      area = { { px - 20, py - 11 }, { px + 20, py + 11 } },
+      collision_mask = "water_tile", limit = 1 })
+    if water > 0 then
+      cancel_build(event, e, "no-water")
+      return
+    end
+  end
+
   -- Un module accolé à l'OUEST d'une fonderie existante devient une EXTENSION
   -- de sa chaîne (allonge la voie et la capacité, sans coffres ni signal).
   local west = composite.adjacent_west(e, storage.foundries)
@@ -533,7 +548,9 @@ local function on_removed(event)
   local e = event.entity
   if not (e and e.valid) then return end
   if e.name ~= MAIN then return end
-  local st = storage.foundries[e.unit_number]
+  local un = e.unit_number  -- capturé tant que e est valide (destroy plus bas
+                            -- peut invalider e → ne plus lire e.unit_number après)
+  local st = storage.foundries[un]
   if not st then return end
 
   -- Détache une EXTENSION de sa chaîne (met à jour la liste du master).
@@ -541,7 +558,7 @@ local function on_removed(event)
     local master = st.master and storage.foundries[st.master]
     if master and master.extensions then
       for i = #master.extensions, 1, -1 do
-        if master.extensions[i] == e.unit_number then
+        if master.extensions[i] == un then
           table.remove(master.extensions, i)
         end
       end
@@ -549,7 +566,7 @@ local function on_removed(event)
     -- Ordre IMPORTANT : détruire l'extension AVANT de reconstruire la chaîne,
     -- pour libérer ses positions (sinon rebuild reposerait des rails-over dessus).
     composite.destroy(st)
-    storage.foundries[e.unit_number] = nil
+    storage.foundries[un] = nil
     if master then
       refresh_chain_minable(master)  -- l'avant-dernière devient minable
       -- Reconstruit la voie sur la chaîne réduite : purge les rails de jonction
@@ -587,7 +604,7 @@ local function on_removed(event)
   end
 
   composite.destroy(st)
-  storage.foundries[e.unit_number] = nil
+  storage.foundries[un] = nil
 end
 
 -- Filtre : la vraie fonderie (name=MAIN) OU son GHOST (ghost_name=MAIN) — plusieurs
