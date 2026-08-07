@@ -26,6 +26,10 @@ local MAIN = names.building
 -- La boucle tourne toutes les 30 ticks (0,5 s).
 local TICK_INTERVAL = 30
 
+-- Sprite d'aperçu de placement (voir le bloc APERÇU plus bas) : image d'ensemble du
+-- bâtiment, ancrée au curseur. Le mod cible Factorio 2.1.
+local PREVIEW_SPRITE = names.mod .. "-preview"
+
 -- Le carburant est-il géré en mode GÉNÉRIQUE (meilleur carburant débloqué dispo +
 -- interruption Refuel) pour cette fonderie ? Toujours en variante STC (pas de
 -- carburant blueprinté à respecter). En variante BP : selon l'option par fonderie
@@ -44,6 +48,9 @@ local function ensure_storage()
   -- unit_number -> { entity, rails = {}, inputs = {}, signal,
   --                  templates = {}, queue = {}, work = nil }
   storage.foundries = storage.foundries or {}
+  -- player_index -> { cursor, chart } rendus de l'aperçu de placement. Recréé au besoin
+  -- (perdu au rechargement). Voir le bloc APERÇU.
+  storage.preview_ids = storage.preview_ids or {}
 end
 
 -- Entité du BORD EST d'une chaîne : la dernière extension (rangées ouest -> est)
@@ -261,8 +268,129 @@ local function migrate_all()
   end
 end
 
-script.on_init(ensure_storage)
-script.on_configuration_changed(migrate_all)
+-- ----------------------------------------------------------------------------
+-- APERÇU DE PLACEMENT : deux sprites d'ensemble (PREVIEW_SPRITE) sont dessinés ANCRÉS
+-- AU CURSEUR (target type="cursor") → ils suivent la souris, visibles seulement quand
+-- le joueur tient l'item de fonderie. Deux render_mode complémentaires pour couvrir
+-- TOUS les affichages : "game" (vue perso + map zoomée sur zone révélée) et "chart"
+-- (map dézoomée + brouillard). Les rendus ne survivent pas à une sauvegarde → on les
+-- (re)crée à on_init, config_changed, arrivée d'un joueur et changement de curseur.
+-- storage.preview_ids[player_index] = { cursor = <game>, chart = <chart> }.
+-- ----------------------------------------------------------------------------
+
+-- Le joueur « tient-il » l'item de fonderie ? Deux cas :
+--   - cursor_stack : un vrai item en main (placement direct) ;
+--   - cursor_ghost : un item fantôme en main (placement en GHOST pour les robots,
+--     quand on n'a pas l'item en stock) → cursor_stack est vide mais cursor_ghost
+--     porte l'item. C'est le cas d'usage principal en jeu avancé (drones).
+-- L'item du bâtiment porte le même nom que l'entité (MAIN, place_result=MAIN).
+local function holding_foundry(player)
+  local cs = player.cursor_stack
+  if cs and cs.valid_for_read and cs.name == MAIN then return true end
+  local cg = player.cursor_ghost
+  if cg then
+    -- cursor_ghost.name peut être une string (LuaItemPrototype-like) ou un
+    -- LuaItemPrototype/pair dont on lit .name. On résout jusqu'à une string.
+    local n = cg.name
+    if n and type(n) ~= "string" then n = n.name end
+    if n == MAIN then return true end
+  end
+  return false
+end
+
+-- Calage de l'aperçu (trouvé en jeu pour que l'aperçu se superpose pile au bâtiment
+-- posé — rails alignés). scale = agrandissement du sprite ; off = décalage en tuiles.
+local PREVIEW_SCALE = 1.03
+local PREVIEW_OFF_X = 0.2
+local PREVIEW_OFF_Y = 0.6
+
+-- (Re)crée les rendus d'aperçu du joueur (invisibles au départ). DEUX rendus, tous
+-- deux ancrés au curseur (suivent la souris) :
+--   render_mode "game"  → vue de JEU + map ZOOMÉE sur zone révélée (là où le terrain
+--                         réel est rendu ; "chart" y serait masqué par le terrain)
+--   render_mode "chart" → vue MAP dézoomée / zones non révélées (fond de carte)
+-- Les deux ensemble couvrent TOUS les cas (perso, map zoomée révélée, map dézoomée,
+-- brouillard). target type="cursor" (et NON "build-cursor", qui n'existe qu'en vue
+-- perso) → le rendu suit le curseur PARTOUT, y compris en mode carte. La visibilité
+-- (item de fonderie en main) est gérée par refresh_preview.
+-- Rangés dans storage.preview_ids[player.index] = { cursor = id, chart = id }.
+local function make_render(player, mode)
+  return rendering.draw_sprite({
+    sprite = PREVIEW_SPRITE,
+    target = { type = "cursor", offset = { PREVIEW_OFF_X, PREVIEW_OFF_Y } },
+    surface = player.surface,
+    render_mode = mode,
+    players = { player },
+    tint = { r = 1, g = 1, b = 1, a = 0.7 },
+    x_scale = PREVIEW_SCALE, y_scale = PREVIEW_SCALE,
+    visible = false,
+  })
+end
+
+local function ensure_preview(player)
+  if not (player and player.valid) then return end
+  storage.preview_ids = storage.preview_ids or {}
+  local cur = storage.preview_ids[player.index]
+  -- Ancien format (un seul LuaRenderObject au lieu de { cursor, chart }) : un
+  -- LuaObject a un object_name → on le détruit et on repart proprement. Indexer
+  -- .cursor dessus lèverait une erreur, d'où ce garde-fou.
+  if cur and cur.object_name then
+    if cur.valid then cur.destroy() end
+    cur = nil
+    storage.preview_ids[player.index] = nil
+  end
+  if cur and cur.cursor and cur.cursor.valid and cur.chart and cur.chart.valid then
+    return
+  end
+  -- Détruit les restes partiels avant de recréer les 2 rendus.
+  if cur then
+    if cur.cursor and cur.cursor.valid then cur.cursor.destroy() end
+    if cur.chart and cur.chart.valid then cur.chart.destroy() end
+  end
+  storage.preview_ids[player.index] = {
+    cursor = make_render(player, "game"),
+    chart = make_render(player, "chart"),
+  }
+end
+
+-- Met à jour la visibilité des 2 rendus : visibles UNIQUEMENT si le joueur tient
+-- l'item de fonderie (le rendu suit le curseur quel que soit l'item ; on le masque sinon).
+local function refresh_preview(player)
+  if not (player and player.valid) then return end
+  ensure_preview(player)
+  local set = storage.preview_ids and storage.preview_ids[player.index]
+  if not set then return end
+  local vis = holding_foundry(player)
+  if set.cursor and set.cursor.valid then set.cursor.visible = vis end
+  if set.chart and set.chart.valid then set.chart.visible = vis end
+end
+
+local function refresh_all_previews()
+  for _, player in pairs(game.players) do refresh_preview(player) end
+end
+
+script.on_init(function()
+  ensure_storage()
+  refresh_all_previews()
+end)
+script.on_configuration_changed(function()
+  migrate_all()
+  refresh_all_previews()
+end)
+script.on_event(defines.events.on_player_created, function(event)
+  refresh_preview(game.get_player(event.player_index))
+end)
+-- Les rendus sont perdus au rechargement ; on les (re)crée et on ajuste leur
+-- visibilité selon l'item en main à chaque changement de curseur — item RÉEL
+-- (cursor_stack) ET item FANTÔME (cursor_ghost, placement pour robots).
+script.on_event(defines.events.on_player_cursor_stack_changed, function(event)
+  refresh_preview(game.get_player(event.player_index))
+end)
+if defines.events.on_player_cursor_ghost_changed then
+  script.on_event(defines.events.on_player_cursor_ghost_changed, function(event)
+    refresh_preview(game.get_player(event.player_index))
+  end)
+end
 
 -- ----------------------------------------------------------------------------
 -- Cycle de vie : pose / dépose

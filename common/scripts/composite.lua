@@ -58,13 +58,15 @@ end
 -- les deux. Géométrie issue de la maquette (blueprint) du joueur.
 local DECO_RAIL_Y = 1
 
--- Sol PAVÉ (stone-path) posé sous la bande des 2 voies (Y=0..+6 : recyclage +
--- assemblage + l'espace entre). Purement visuel/sol ; sur toute la largeur
--- intérieure du module (X -17..+17). Le sol d'origine est mémorisé (floor_saved)
--- pour être restauré à la dépose.
+-- Sol PAVÉ (stone-path) posé sous la bande des 2 voies. Purement visuel/sol ; sur
+-- toute la largeur intérieure du module (X -17..+17). Le sol d'origine est mémorisé
+-- (floor_saved) pour être restauré à la dépose.
+-- FLOOR_Y_MIN = -1 (au lieu de 0) : le pavé (dessiné SOUS le sprite, c'est une tuile)
+-- remonte d'une tuile pour MASQUER la bande de fond bleu qui déborde au bas du sprite
+-- déco haut sur le sol — sinon fine ligne bleue visible entre bâtiment et pavé.
 local FLOOR_TILE = "stone-path"
 local FLOOR_X_MIN, FLOOR_X_MAX = -17, 18  -- +18 : le pavé va jusqu'au mur est (+19)
-local FLOOR_Y_MIN, FLOOR_Y_MAX = 0, 6
+local FLOOR_Y_MIN, FLOOR_Y_MAX = -1, 6
 
 -- Enceinte de murs : pourtour du footprint. Le bâtiment fait 40×22 (collision
 -- box [-18,-10.7]..[19.7,10.7]). Les murs vivent sur les tuiles ENTIÈRES : on

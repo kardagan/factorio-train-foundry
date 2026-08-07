@@ -201,7 +201,10 @@ link_dev() {
 # exige toujours un REDÉMARRAGE COMPLET de Factorio.
 devlink() {
   local variant="${1:-}"
-  [[ -n "$variant" ]] || { echo "Usage: $0 devlink {bp|stc}" >&2; exit 2; }
+  local channel="${2:-2.0}"   # canal de jeu ciblé : 2.0 (défaut) ou 2.1
+  [[ -n "$variant" ]] || { echo "Usage: $0 devlink {bp|stc} [2.0|2.1]" >&2; exit 2; }
+  [[ "$channel" == "2.0" || "$channel" == "2.1" ]] || {
+    echo "Canal inconnu: $channel (attendu 2.0 ou 2.1)" >&2; exit 2; }
   local name; name="$(mod_name "$variant")"
   [[ "$name" != "?" ]] || { echo "Variante inconnue: $variant" >&2; exit 2; }
   local mods="$HOME/.factorio/mods"
@@ -253,7 +256,15 @@ require("data-variant")
 LUA
   cp info.json "$stage/info.json"
   local base; base="$(mod_version "$variant")"
-  rewrite_info "$stage/info.json" "$name" "$base" "2.0" "2.0.0" "$variant"
+  # Résout gamever + base_min + offset depuis TARGETS selon le canal demandé, puis
+  # dérive le semver (minor +offset) — même logique que package.
+  local gamever base_min offset target
+  for target in "${TARGETS[@]}"; do
+    IFS=':' read -r gamever base_min offset <<<"$target"
+    [[ "$gamever" == "$channel" ]] && break
+  done
+  local modver; modver="$(bump_minor "$base" "$offset")"
+  rewrite_info "$stage/info.json" "$name" "$modver" "$gamever" "$base_min" "$variant"
 
   # Le dossier stage (rempli de liens) est lui-même symlinké dans mods/.
   rm -f "$mods/${name}_"*.zip
@@ -278,7 +289,7 @@ unlink_dev() {
 case "${1:-package}" in
   package) package ;;
   link)    link_dev "${2:-}" ;;
-  devlink) devlink "${2:-}" ;;
+  devlink) devlink "${2:-}" "${3:-2.0}" ;;
   unlink)  unlink_dev "${2:-}" ;;
   clean)   rm -rf "$DIST"; echo "dist/ supprimé." ;;
   *) echo "Usage: $0 {package|link {bp|stc}|devlink {bp|stc}|unlink [bp|stc]|clean}" >&2; exit 2 ;;

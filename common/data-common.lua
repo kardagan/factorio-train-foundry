@@ -295,11 +295,25 @@ local deco_top = {
 }
 hide(deco_top)
 
+-- Sprite d'APERÇU de placement : image d'ensemble du bâtiment (capture réelle : sol,
+-- 2 voies, bandes déco haut/bas, contour des murs). Dessiné par control.lua via
+-- rendering.draw_sprite ancré au CURSEUR (target type="cursor"), en deux exemplaires
+-- (render_mode "game" pour la vue perso + map zoomée révélée, "chart" pour la map
+-- dézoomée/brouillard) → l'aperçu suit la souris partout, visible seulement quand le
+-- joueur tient l'item de fonderie. Préfixé names.mod (pas de collision entre les 2
+-- mods). foundry-preview.png = capture recadrée sur l'emprise 40×22 (scale calé côté
+-- control pour tomber pile sur l'emprise en jeu).
+local preview_sprite = {
+  type = "sprite", name = names.mod .. "-preview",
+  filename = GFX .. "foundry-preview.png", width = 1280, height = 704,
+  scale = 1.05, flags = { "no-crop" },
+}
+
 data:extend({
   { type = "recipe-category", name = names.dummy_cat },
 
   main, rail, rail_over, rail_ext, recycle_stop, block_signal, block_combi,
-  input, signal, combinator, wall, gate, deco_top,
+  input, signal, combinator, wall, gate, deco_top, preview_sprite,
 
   -- Vue d'ensemble : raccourci + touche perso ouvrant la fonderie de la surface.
   {
