@@ -180,6 +180,26 @@ local gate = table.deepcopy(data.raw["gate"]["gate"])
 gate.name = GATE
 hide(gate)
 
+-- Bloqueur INVISIBLE de la bande basse (ferraille) : simple-entity-with-owner sans
+-- sprite, avec une collision qui arrête le personnage (is_object). Posé au runtime
+-- (composite) au CENTRE de la bande basse (Y+7.5), pas au centre du bâtiment.
+-- collision_box CENTRÉE sur (0,0) — contrainte du moteur pour ce type d'entité :
+-- bande de 3 tuiles de haut (±1.5) et pleine largeur (±16.85). Une fois posée à
+-- Y+7.5, elle couvre donc Y 6..9. picture vide (invisible).
+local blocker = {
+  type = "simple-entity-with-owner",
+  name = names.blocker,
+  flags = { "not-on-map", "not-blueprintable", "not-deconstructable",
+            "not-upgradable", "no-copy-paste", "hide-alt-info", "player-creation" },
+  hidden = true,
+  hidden_in_factoriopedia = true,
+  selectable_in_game = false,
+  collision_box = { { -18.5, -1.5 }, { 18.5, 1.5 } },
+  selection_box = { { -18.5, -1.5 }, { 18.5, 1.5 } },
+  collision_mask = { layers = { is_object = true } },
+  picture = { filename = "__core__/graphics/empty.png", width = 1, height = 1 },
+}
+
 -- Gare de RECYCLAGE : clone du train-stop vanilla, posé au bout de la voie de
 -- recyclage. NON hide() complet — une gare `hidden` n'apparaît PAS dans la liste
 -- des gares d'un schedule, or on veut pouvoir la cibler. Donc SÉLECTIONNABLE et
@@ -226,12 +246,15 @@ local main = {
   -- collée au bâtiment ne se referme jamais (le bâtiment reste dans son rayon
   -- d'activation → déclencheur permanent). Les VRAIS MURS gardent l'enceinte
   -- étanche ; la bande libérée entre collision et murs est protégée par les murs.
-  -- Collision rétrécie aussi en Y (−9.0/+9.0 au lieu de ±10.7) : les MURS haut/bas
-  -- (Y=±10, collision propre ±0.29 → bord interne à ±9.71) sont ainsi FRANCHEMENT
-  -- HORS de la collision du bâtiment. Sinon leur pose échoue (ils tombent DANS la
-  -- collision → create_entity refuse silencieusement). Comme en X pour les portes.
-  -- Les vrais murs gardent l'enceinte étanche.
-  collision_box = { { -16.0, -9.0 }, { 17.7, 9.0 } },
+  -- Collision limitée à la BANDE HAUTE (Y -9..0, les machines) : le personnage peut
+  -- ainsi MARCHER sur la bande pavée centrale (Y 0..6, les voies) — is_object bloque
+  -- le perso, on l'enlève donc du centre. La bande BASSE (ferraille, Y 6..9) est
+  -- rebloquée par une entité tf-blocker posée au runtime (voir composite).
+  -- En X, la bande reste -16..17.7 (PAS mur à mur) : sinon deux modules accolés
+  -- (dx=36) chevaucheraient leurs collisions hautes → l'extension ne se pose plus.
+  -- Le passage vertical du perso dans les coins (bandes latérales entre collision et
+  -- murs) est bloqué séparément par des tf-blocker de coin (voir composite).
+  collision_box = { { -16.0, -9.0 }, { 17.7, 0.0 } },
   selection_box = { { -20, -11 }, { 20, 11 } },
   selection_priority = 40,
   tile_width = 40,
@@ -313,7 +336,7 @@ data:extend({
   { type = "recipe-category", name = names.dummy_cat },
 
   main, rail, rail_over, rail_ext, recycle_stop, block_signal, block_combi,
-  input, signal, combinator, wall, gate, deco_top, preview_sprite,
+  input, signal, combinator, wall, gate, blocker, deco_top, preview_sprite,
 
   -- Vue d'ensemble : raccourci + touche perso ouvrant la fonderie de la surface.
   {

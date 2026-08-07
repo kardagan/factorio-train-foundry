@@ -29,6 +29,7 @@ local COMBINATOR = names.combinator
 local BPCHEST    = names.bpchest
 local WALL       = names.wall
 local GATE       = names.gate
+local BLOCKER    = names.blocker   -- collision invisible bande basse (perso bloqué)
 local DECO_TOP   = names.deco_top   -- bande déco haut (entité, ordre de dessin piloté)
 
 -- Réserve (coffre de fer), coffre à blueprints et connecteur circuit, posés
@@ -300,6 +301,7 @@ function composite.build(entity)
     side_east = {},    -- colonne est : murs + portes (selon exit_right / extension)
     recycle_stops = {},-- gares de recyclage (train-stop, bord opposé à l'entrée)
     deco_top_ent = nil,-- bande déco haut (entité ; Y décalé selon voisin pour l'ordre)
+    blocker = nil,     -- collision invisible bande basse (perso bloqué, centre marchable)
     floor_saved = {},  -- sol d'origine écrasé par les pavés (pour restauration)
     input = nil,       -- coffre de fer (réserve) sur le parvis
     bpchest = nil,     -- coffre à blueprints sur le parvis
@@ -920,12 +922,40 @@ function composite.rebuild_side(state, side, flags_state)
 end
 
 -- (Re)construit tout le pourtour d'UN module isolé : statique + 2 colonnes + déco.
+-- Décalage Y du blocker de la bande basse depuis le centre du bâtiment. La
+-- collision_box du blocker (centrée sur 0,0, hauteur ±1.5) couvre donc
+-- [BLOCKER_OFFSET_Y-1.5 .. BLOCKER_OFFSET_Y+1.5]. Calé en jeu (8.0) pour que le perso
+-- puisse descendre juste jusqu'au bord du pavé.
+composite.BLOCKER_OFFSET_Y = 8.0
+
+-- Bloqueur invisible de la bande BASSE (ferraille) : entité BLOCKER posée sous le
+-- centre du bâtiment. Le personnage est bloqué là ; la bande pavée centrale reste
+-- marchable (la collision du bâtiment ne couvre que la bande haute). Idempotent.
+function composite.ensure_blocker(state)
+  local e = state.entity
+  if not (e and e.valid) then return end
+  local pos = { e.position.x, e.position.y + composite.BLOCKER_OFFSET_Y }
+  if state.blocker and state.blocker.valid then
+    -- Repositionne si l'offset a changé (calage en direct).
+    if math.abs(state.blocker.position.y - pos[2]) > 0.001 then
+      state.blocker.teleport(pos)
+    end
+    return
+  end
+  state.blocker = e.surface.find_entities_filtered({
+    name = BLOCKER, position = pos, radius = 2.0 })[1]
+    or e.surface.create_entity({
+      name = BLOCKER, position = pos, force = e.force })
+  if state.blocker then state.blocker.destructible = false end
+end
+
 -- Module isolé = pas d'extension à droite → façade en variation 1 (normal).
 function composite.ensure_walls(state)
   composite.ensure_walls_static(state)
   composite.rebuild_side(state, "west")
   composite.rebuild_side(state, "east")
   composite.ensure_facade(state, false)
+  composite.ensure_blocker(state)
 end
 
 -- Murs d'une CHAÎNE de modules. `chain` = liste ORDONNÉE des STATES (master en
@@ -957,6 +987,9 @@ function composite.rebuild_chain_walls(master_state, chain)
     -- voisin à droite (i < n), sinon variation 1 (normal). graphics_variation est
     -- fiable, contrairement à l'ordre de dessin.
     composite.ensure_facade(st, i < n)
+    -- Bloqueur de la bande basse : sur CHAQUE module de la chaîne (sinon seul le
+    -- module bâti isolément l'a → on marche sur le bas des autres).
+    composite.ensure_blocker(st)
   end
   composite.rebuild_recycle_stops(master_state, chain)
 end
@@ -1186,13 +1219,16 @@ function composite.destroy(state)
       if ent.valid then ent.destroy() end
     end
   end
-  -- Bande déco haut de CE module.
+  -- Bande déco haut + bloqueur bande basse de CE module.
   if state.deco_top_ent and state.deco_top_ent.valid then
     state.deco_top_ent.destroy()
   end
+  if state.blocker and state.blocker.valid then
+    state.blocker.destroy()
+  end
   if surf then
     for _, ent in ipairs(surf.find_entities_filtered({
-      name = { WALL, GATE, RECYCLE_STOP, DECO_TOP },
+      name = { WALL, GATE, RECYCLE_STOP, DECO_TOP, BLOCKER },
       area = { { cx + WALL_X_MIN - 1, cy + WALL_Y_MIN - 1 },
                { cx + WALL_X_MAX + 1, cy + WALL_Y_MAX + 1 } },
     })) do

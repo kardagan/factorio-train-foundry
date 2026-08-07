@@ -14,6 +14,7 @@ return {
   combinator  = "tfstc-combinator",
   wall        = "tfstc-wall",               -- enceinte de murs du bâtiment
   gate        = "tfstc-gate",               -- portes aux sorties des voies
+  blocker     = "tfstc-blocker",            -- collision invisible bande basse (perso bloqué)
   recycle_stop      = "tfstc-recycle-stop", -- gare de recyclage (train-stop)
   recycle_stop_name = "[entity=tfstc-foundry] Train Recycle",  -- backer_name (schedule)
   block_signal      = "tfstc-block-signal", -- signal toujours rouge (anti-marche-arrière)
