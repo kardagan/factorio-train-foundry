@@ -101,7 +101,7 @@ local RECYCLE_ROAD = {
   -- "far" (module du bout fermé, opposé). Dans une chaîne : entrée gauche → entry=
   -- master, far=dernière extension ; entrée droite → l'inverse.
   west = {  -- entrée à GAUCHE : gare au fond EST, blocage à l'entrée OUEST
-    { kind = "stop",   anchor = "far",   x = 17, y = 2, dir = defines.direction.east },
+    { kind = "stop",   anchor = "far",   x = 15, y = 2, dir = defines.direction.east },
     { kind = "signal", anchor = "entry", x = -17, y = -1, dir = defines.direction.east, wired = true },
     { kind = "signal", anchor = "entry", x = -17, y =  2, dir = defines.direction.west },
     { kind = "combi",  anchor = "entry", x = -15, y = -1 },
