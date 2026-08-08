@@ -46,7 +46,7 @@ vehicles per module). The chain is driven from a single window.
   whether to broadcast the internal stock or the missing components.
 - **Remote control** — a shortcut-bar button (or `CTRL+ALT+F`) opens the
   foundry's window from anywhere. One foundry (chain) per planet.
-- Compatible with vanilla and Space Age.
+- Compatible with vanilla, Space Age and Nullius.
 
 ## Building from source
 

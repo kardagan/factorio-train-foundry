@@ -80,7 +80,7 @@ blueprint with no fuel always uses this generic mode — nothing to honour.
   components it still needs.
 - **Remote control.** A shortcut-bar button (or CTRL+ALT+F) opens the foundry's
   window from anywhere — no need to walk to it. One foundry (chain) per planet.
-- **Compatible** with vanilla and Space Age.
+- **Compatible** with vanilla, Space Age and Nullius.
 
 ### Credits
 

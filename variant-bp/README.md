@@ -32,7 +32,7 @@ blueprint parameters included.
 - **Circuit connector**: broadcast the stock contents or the missing components.
 - **Clear stuck train**: one click destroys and refunds a train that cannot leave.
 - **Remote control**: a shortcut-bar button (and Ctrl+Alt+F) opens the foundry from anywhere.
-- One foundry per planet.
+- One foundry per planet. Vanilla, Space Age and Nullius compatible.
 
 ## Credits
 

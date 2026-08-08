@@ -84,7 +84,7 @@ delivered by your logistics.
   and refunds its cost.
 - **Remote control.** A shortcut-bar button (or CTRL+ALT+F) opens the foundry
   from anywhere. One foundry (chain) per planet.
-- **Compatible** with vanilla and Space Age.
+- **Compatible** with vanilla, Space Age and Nullius.
 
 ### Credits
 

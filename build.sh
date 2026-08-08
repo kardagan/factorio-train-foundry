@@ -102,6 +102,9 @@ for d in data.get("dependencies", []):
         pass  # nullius/wide-containers-assets retirés ; STC ré-ajouté ci-dessous.
     else:
         deps.append(d)
+# NB : pas de dépendance nullius déclarée. La compat Nullius reste dans data-common
+# (recette/techno adaptées si mods["nullius"]) — `mods` est fiable sans dépendance,
+# et les items nullius-* nommés dans les recettes sont résolus en fin de chargement.
 if variant == "stc":
     # Dépendance OBLIGATOIRE (pas optionnelle) : la variante STC lit les modèles via
     # remote.call vers smart-train-combinator ; sans lui elle n'a aucun sens.
