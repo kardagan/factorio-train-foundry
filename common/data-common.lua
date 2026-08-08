@@ -343,11 +343,20 @@ local preview_sprite = {
   scale = 1.05, flags = { "no-crop" },
 }
 
+-- Portique/grue déco dessiné au-dessus des voies (foundry-roof). Sprite dessiné par
+-- control.lua via rendering.draw_sprite (calé en jeu, puis figé).
+local roof_sprite = {
+  type = "sprite", name = names.mod .. "-roof",
+  filename = GFX .. "foundry-roof.png", width = 1022, height = 689,
+  scale = 1, flags = { "no-crop" },
+}
+
 data:extend({
   { type = "recipe-category", name = names.dummy_cat },
 
   main, rail, rail_over, rail_ext, recycle_stop, block_signal, block_combi,
   input, signal, combinator, wall, gate, blocker, deco_top, preview_sprite,
+  roof_sprite,
 
   -- Vue d'ensemble : raccourci + touche perso ouvrant la fonderie de la surface.
   {

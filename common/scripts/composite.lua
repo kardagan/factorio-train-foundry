@@ -1223,12 +1223,15 @@ function composite.destroy(state)
       if ent.valid then ent.destroy() end
     end
   end
-  -- Bande déco haut + lignes de mur invisible de CE module.
+  -- Bande déco haut + lignes de mur invisible + portique (LuaRendering) de CE module.
   if state.deco_top_ent and state.deco_top_ent.valid then
     state.deco_top_ent.destroy()
   end
   for _, b in ipairs(state.blockers or {}) do
     if b and b.valid then b.destroy() end
+  end
+  if state.roof_render and state.roof_render.valid then
+    state.roof_render.destroy()
   end
   if surf then
     for _, ent in ipairs(surf.find_entities_filtered({

@@ -30,6 +30,14 @@ local TICK_INTERVAL = 30
 -- bâtiment, ancrée au curseur. Le mod cible Factorio 2.1.
 local PREVIEW_SPRITE = names.mod .. "-preview"
 
+-- Déco portique/grue dessinée au-dessus des voies (rendering.draw_sprite). Valeurs
+-- de position/échelle calées en jeu.
+local ROOF_SPRITE = names.mod .. "-roof"
+local ROOF_SHIFT_X = 1   -- calé en jeu pour centrer le portique sur les voies
+local ROOF_SHIFT_Y = 5
+local ROOF_SCALE = 1
+local ROOF_LAYER = "higher-object-above"
+
 -- Le carburant est-il géré en mode GÉNÉRIQUE (meilleur carburant débloqué dispo +
 -- interruption Refuel) pour cette fonderie ? Toujours en variante STC (pas de
 -- carburant blueprinté à respecter). En variante BP : selon l'option par fonderie
@@ -372,6 +380,24 @@ local function refresh_all_previews()
   for _, player in pairs(game.players) do refresh_preview(player) end
 end
 
+-- Déco portique/grue au-dessus des voies d'une fonderie (LuaRendering). Idempotent :
+-- détruit l'ancien rendu avant d'en recréer un (utilisé aussi par le calage direct).
+local function ensure_roof(st)
+  if not (st and st.entity and st.entity.valid) then return end
+  if st.roof_render and st.roof_render.valid then st.roof_render.destroy() end
+  st.roof_render = rendering.draw_sprite({
+    sprite = ROOF_SPRITE,
+    target = { entity = st.entity, offset = { ROOF_SHIFT_X, ROOF_SHIFT_Y } },
+    surface = st.entity.surface,
+    render_layer = ROOF_LAYER,
+    x_scale = ROOF_SCALE, y_scale = ROOF_SCALE,
+  })
+end
+
+local function refresh_all_roofs()
+  for _, st in pairs(storage.foundries) do ensure_roof(st) end
+end
+
 -- APERÇU sur un GHOST posé (Alt+clic / drones en attente) : le ghost natif n'affiche
 -- que le graphics_set du prototype (la bande bas). On dessine l'image d'ensemble à SA
 -- position (fixe), en "game" + "chart", effacée quand le ghost disparaît (construit
@@ -398,10 +424,12 @@ end
 script.on_init(function()
   ensure_storage()
   refresh_all_previews()
+  refresh_all_roofs()
 end)
 script.on_configuration_changed(function()
   migrate_all()
   refresh_all_previews()
+  refresh_all_roofs()
 end)
 script.on_event(defines.events.on_player_created, function(event)
   refresh_preview(game.get_player(event.player_index))
@@ -523,6 +551,7 @@ local function on_built(event)
     end
     local st = composite.build_extension(e, master.entity.unit_number)
     storage.foundries[e.unit_number] = st
+    ensure_roof(st)  -- déco portique au-dessus des voies de l'extension
     master.extensions = master.extensions or {}
     master.extensions[#master.extensions + 1] = e.unit_number
     refresh_chain_minable(master)  -- nouvelle extension = seule minable
@@ -545,7 +574,9 @@ local function on_built(event)
   -- voie interne (et donc son raccord de sortie ouest) via composite.build. Le
   -- joueur raccorde son réseau à la voie de sortie après coup ; la sortie est
   -- (droite) s'active à la demande depuis la fenêtre.
-  storage.foundries[e.unit_number] = composite.build(e)
+  local st = composite.build(e)
+  storage.foundries[e.unit_number] = st
+  ensure_roof(st)  -- déco portique au-dessus des voies
 end
 
 local function on_removed(event)
