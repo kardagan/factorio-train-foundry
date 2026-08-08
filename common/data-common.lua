@@ -270,10 +270,12 @@ local main = {
   build_grid_size = 2,
   -- collision_mask SANS is_object : le personnage peut MARCHER dans l'enceinte (il
   -- collisionne avec is_object, pas avec meltable). Il est confiné à la bande pavée
-  -- centrale par deux LIGNES de mur invisibles (tf-blocker) posées à Y=0 et Y=6 (voir
-  -- composite) ; les vrais murs ferment le pourtour. meltable réserve un minimum ;
-  -- water_tile interdit la pose sur l'eau (+ vérif emprise complète à on_built).
-  collision_mask = { layers = { meltable = true, water_tile = true } },
+  -- centrale par deux LIGNES de mur invisibles (tf-blocker) posées à Y -1 et Y 6 (voir
+  -- composite) ; les vrais murs ferment le pourtour. meltable réserve un minimum.
+  -- PAS de water_tile : la pose sur l'eau est AUTORISÉE, et le mod remblaie lui-même
+  -- toute l'emprise à on_built (bâtiment « amphibie ») — sinon water_tile bloquerait
+  -- la pose avant qu'on puisse combler.
+  collision_mask = { layers = { meltable = true } },
   crafting_categories = { names.dummy_cat },
   crafting_speed = 1,
   energy_source = { type = "electric", usage_priority = "secondary-input",

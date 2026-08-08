@@ -492,18 +492,23 @@ local function on_built(event)
   end
   if e.name ~= MAIN then return end
 
-  -- Refus si l'EMPRISE contient de l'eau : la collision_box (bande haute) porte déjà
-  -- water_tile, mais elle ne couvre pas tout le footprint (bas/centre). On vérifie
-  -- donc l'emprise COMPLÈTE (40×22 autour du centre, PAS e.bounding_box qui vaut la
-  -- collision_box réduite) et on rembourse. Il faut remblayer avant de poser.
+  -- REMBLAI AUTOMATIQUE de l'emprise : le shift+clic ne remblaie que sous la
+  -- collision_box (réduite), pas sous toute l'emprise → il resterait de l'eau aux
+  -- bords. On comble donc nous-même toutes les tuiles d'eau autour du bâtiment avec
+  -- du landfill (gratuit — la fonderie est « amphibie »). Zone ±21/±12 : une tuile
+  -- de marge au-delà de l'emprise 40×22 pour ne pas laisser de liseré d'eau contre
+  -- les murs (bas et côtés).
   do
     local px, py = e.position.x, e.position.y
-    local water = e.surface.count_tiles_filtered({
-      area = { { px - 20, py - 11 }, { px + 20, py + 11 } },
-      collision_mask = "water_tile", limit = 1 })
-    if water > 0 then
-      cancel_build(event, e, "no-water")
-      return
+    local waters = e.surface.find_tiles_filtered({
+      area = { { px - 21, py - 12 }, { px + 21, py + 12 } },
+      collision_mask = "water_tile" })
+    if #waters > 0 then
+      local set = {}
+      for _, t in ipairs(waters) do
+        set[#set + 1] = { name = "landfill", position = t.position }
+      end
+      e.surface.set_tiles(set)
     end
   end
 
