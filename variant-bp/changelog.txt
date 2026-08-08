@@ -12,9 +12,9 @@ Date: 2026-08-07
     - Rich placement preview (2.1): while holding the foundry item (real or ghost), a full picture of
       the building follows the cursor in both the game view and the map, so you can see exactly where
       the tracks and walls will land before placing. It also shows on a placed ghost.
-    - The reserve chest on the west platform is now a 1x2 vertical container (tall-steel-chest sprite
-      from the Wide Containers Assets mod by Lebothegizebo, MIT). The platform is spaced so inserters
-      fit between the chests and the circuit connector.
+    - New look: overhead crane gantry over the tracks, a 1x2 reserve chest (tall-steel-chest sprite
+      from the Wide Containers Assets mod by Lebothegizebo, MIT), and the platform elements spaced so
+      inserters fit between the chests and the circuit connector.
   Changes:
     - Extensions only snap to a foundry placed at the exact adjacency distance; placing one too far is
       refused and refunded.

@@ -1105,8 +1105,15 @@ function composite.rebuild_deco_track(master_state, chain)
   for i, st in ipairs(chain) do
     local e = st.entity
     if e and e.valid then
-      -- Voie interne jusqu'aux bords -17..+17 (la gare du bout fermé est à ±17).
-      lay_rails(master_state, e, -17, 17, DECO_RAIL_Y, master_state.rails_deco)
+      -- Voie interne. Le bord du BOUT FERMÉ (opposé à l'entrée) s'arrête à ±15 (2
+      -- tuiles avant le mur) pour ne pas que le sprite du rail déborde hors de
+      -- l'enceinte. Le bord côté ENTRÉE va jusqu'à ±17 (raccord externe ensuite).
+      -- Entrée droite (deco_right) → fermé à l'OUEST : chain[1] démarre à -15.
+      -- Entrée gauche (deco_left)  → fermé à l'EST  : chain[n] finit à +15.
+      local x0, x1 = -17, 17
+      if master_state.deco_right and i == 1 then x0 = -15 end
+      if master_state.deco_left  and i == n then x1 = 15 end
+      lay_rails(master_state, e, x0, x1, DECO_RAIL_Y, master_state.rails_deco)
     end
   end
   -- Raccord EXTERNE (le bout qui dépasse le mur) du côté de l'entrée, en RAIL_EXT
