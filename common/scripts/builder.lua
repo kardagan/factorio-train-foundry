@@ -558,39 +558,43 @@ function builder.spawn(state, template, params, fuel_item, generic)
   end
   local inv = shared_inventory(state)
 
-  -- Pose des véhicules. Le template est trié tête (ouest/nord du BP) vers
-  -- queue : la tête sort en premier. Mapping des orientations BP -> voie
-  -- est-ouest : BP horizontal conservé tel quel, BP vertical tourné d'un
-  -- quart (nord -> ouest).
+  -- ORIENTATION au spawn.
+  -- Le template est trié le long de l'axe (stock[1] = le plus à l'OUEST), et pour le
+  -- BP l'horizontalité est GARANTIE à l'import (les BP verticaux sont refusés), donc
+  -- l'orientation de chaque véhicule (s.orientation) a un sens est/ouest fiable.
   --
-  -- Train STC (source_kind == "stc", loco en stock[1]) : l'orientation n'est PAS
-  -- figée par le template, on l'oriente selon le côté de SORTIE effectif, décidé
-  -- ICI (au spawn). Sortie droite SEULE (exit_right et pas exit_left) → on retourne
-  -- le train : loco côté est, tête à l'est, orientée est ; sinon (gauche, ou les
-  -- deux) → tête à l'ouest (comportement historique). Le mode BP garde ses propres
-  -- orientations, on ne touche pas.
-  local stc_right = (template.source_kind == "stc")
-    and (state.exit_right and not state.exit_left)
+  -- flip_east = sortie DROITE seule → le train se retourne (miroir est-ouest) : la
+  -- tête part à l'est et chaque orientation est inversée. Sinon (gauche seule ou les
+  -- deux) → train tel quel, tête à l'ouest.
+  --   - BP  : on RESPECTE l'orientation du véhicule (s.orientation), inversée si flip.
+  --   - STC : pas d'orientation propre → ouest par défaut, est si flip.
+  local flip_east = state.exit_right and not state.exit_left
+  local is_stc = (template.source_kind == "stc")
   local count = #template.stock
+
+  -- Orientation est/ouest d'un véhicule BP depuis son orientation Factorio (0..1) :
+  -- 0.25 = est, 0.75 = ouest (voie horizontale). Défaut ouest.
+  local function bp_dir(s)
+    local o = s.orientation or 0.75
+    return (math.abs(o - 0.25) < 0.26) and defines.direction.east
+      or defines.direction.west
+  end
 
   local spawned = {}
   for i, s in ipairs(template.stock) do
     local dir, slot
-    if stc_right then
-      -- Ordre inversé : stock[1] (loco) part à l'est, la queue à l'ouest ; tous
-      -- orientés est (train tête à l'est).
-      slot = count - i          -- i=1 -> slot le plus à l'est
-      dir = defines.direction.east
+    if flip_east then
+      slot = count - i          -- i=1 (tête BP, ouest) -> slot le plus à l'EST
+      if is_stc then
+        dir = defines.direction.east
+      else
+        -- miroir : on inverse l'orientation BP
+        dir = (bp_dir(s) == defines.direction.east)
+          and defines.direction.west or defines.direction.east
+      end
     else
       slot = i - 1              -- i=1 (tête) le plus à l'ouest
-      local o = s.orientation or (template.horizontal and 0.75 or 0)
-      if template.horizontal then
-        dir = (math.abs(o - 0.25) < 0.26) and defines.direction.east
-          or defines.direction.west
-      else
-        dir = (math.abs(o - 0.5) < 0.26) and defines.direction.east
-          or defines.direction.west
-      end
+      dir = is_stc and defines.direction.west or bp_dir(s)
     end
     local v = e.surface.create_entity({
       name = s.name,

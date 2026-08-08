@@ -150,6 +150,16 @@ function blueprint.parse(source, capacity)
   if lateral > 1.5 then
     return nil, "import-not-straight"
   end
+  -- La voie de la fonderie est EST-OUEST : on n'accepte que les blueprints dont le
+  -- train est posé HORIZONTALEMENT, pour reproduire l'orientation telle quelle (loco
+  -- et sens du BP conservés). Un BP vertical devrait être « tourné », ce qui
+  -- réinterprète tête/sens et provoque des trains mal orientés → on le refuse.
+  -- Un train d'UN seul véhicule (span nul dans les deux axes) est accepté (horizontal
+  -- par défaut, pas d'ambiguïté d'ordre).
+  local span_x, span_y = maxx - minx, maxy - miny
+  if span_x < 0.5 and span_y > 1.5 then
+    return nil, "import-vertical"
+  end
 
   table.sort(stock, function(a, b)
     if horizontal then return a.position.x < b.position.x end
