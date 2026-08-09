@@ -221,14 +221,18 @@ function stc_template.build(model)
     }
   end
 
-  -- Stop : destination pleine / sans chemin → parking temporaire.
+  -- Stop : destination pleine / sans chemin → parking temporaire. Gare nommée avec
+  -- signal-hourglass (VANILLA, évoque l'attente) ×3 — auparavant signs-2 (mod
+  -- « Signals extended », non dépendance → icône manquante hors de ce mod). Le nom
+  -- exact importe peu, il doit juste être cohérent entre l'interruption et la gare
+  -- de parking du joueur.
   interrupts[#interrupts + 1] = {
     name = prefix .. "[color=orange]stop[/color]",
     conditions = {
       { type = "destination_full_or_no_path", compare_type = "and" },
     },
     targets = {
-      { station = "[virtual-signal=signs-2][virtual-signal=signs-2][virtual-signal=signs-2]",
+      { station = "[virtual-signal=signal-hourglass][virtual-signal=signal-hourglass][virtual-signal=signal-hourglass]",
         wait_conditions = {
           { type = "time", compare_type = "and", ticks = 60 },
         } },
