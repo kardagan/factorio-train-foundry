@@ -78,6 +78,9 @@ delivered by your logistics.
   side its schedule leads to.
 - **Longer trains.** Chain extensions against the east side — each module adds
   room for five more vehicles.
+
+![Chained foundries for longer trains](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/stc-extensions.png)
+
 - **Circuit network.** Broadcast the stock contents or the components (and fuels)
   still needed.
 - **Clear a stuck train.** If a built train cannot leave, one click destroys it
