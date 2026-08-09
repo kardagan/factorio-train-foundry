@@ -4,6 +4,9 @@ Date: 2026-08-07
   Info:
     - The mod now targets Factorio 2.1 only. Factorio 2.0 is no longer maintained (a 2.0 branch is
       kept for a possible crash-only hotfix).
+    - Upgrading an existing save: the platform is rebuilt automatically. An extension placed before
+      1.0.0 keeps the old adjacency spacing and may show a small gap at the junction with the main
+      building — just re-place that extension flush against it to fix it.
   Features:
     - The building is now made of real entities: stone walls with gates around the perimeter, two
       internal tracks (assembly and recycling), and decorative bands (industrial top, scrap bottom).

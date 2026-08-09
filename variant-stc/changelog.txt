@@ -5,6 +5,9 @@ Date: 2026-08-07
     - The mod now targets Factorio 2.1 only. Factorio 2.0 is no longer maintained.
     - Smart Train Combinator is now a required dependency (it was optional): the foundry reads train
       models from it, so it makes no sense without it.
+    - Upgrading an existing save: the platform is rebuilt automatically. An extension placed before
+      1.0.0 keeps the old adjacency spacing and may show a small gap at the junction with the main
+      building — just re-place that extension flush against it to fix it.
   Features:
     - The building is now made of real entities: stone walls with gates around the perimeter, two
       internal tracks (assembly and recycling), and decorative bands (industrial top, scrap bottom).
