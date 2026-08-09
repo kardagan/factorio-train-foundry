@@ -20,8 +20,11 @@ orientation, colors, fuel, schedule, train group and blueprint parameters.
 
 ### How it works
 
-- **Place it anywhere buildable.** The foundry lays its own exit track — no need
-  to prepare a rail first. Just connect your network to the exit afterwards.
+- **Place it anywhere buildable.** While you hold the item (or a ghost for robots),
+  a full preview of the building follows the cursor — in the game view and on the
+  map — so you see exactly where the tracks and walls will land. The foundry lays
+  its own exit track; just connect your network to the exit afterwards. It can even
+  be placed on water: the footprint is filled with landfill automatically.
 - **Drop blueprints in the chest.** A dedicated blue blueprint chest sits on the
   west apron — drop your train blueprints there (by hand or with inserters). The
   foundry's window lists them; click a plan to queue it. Blueprints must contain
@@ -61,6 +64,15 @@ whole hall.
 
 ![Chained foundries for longer trains](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/extensions.png)
 
+### Recycling track
+
+Tick **Recycling track** in the Configuration window to add a second, dead-end
+track inside the foundry, with its own entry side (left or right) and a
+**Train Recycle** stop at the closed end. Route a train onto it and the foundry
+destroys it and refunds its full cost — vehicles, fuel and cargo — straight into
+the internal stock. A one-way block signal keeps a bidirectional train from
+backing out.
+
 ### Fuel
 
 By default the train is fuelled exactly like the blueprint says — whatever fuel
@@ -78,6 +90,8 @@ blueprint with no fuel always uses this generic mode — nothing to honour.
 - **Circuit network.** Wire the foundry's connector and, in the Configuration
   window, choose to broadcast either the internal stock contents or the
   components it still needs.
+- **Clear a stuck train.** If a built train cannot leave, one click destroys it
+  and refunds its cost.
 - **Remote control.** A shortcut-bar button (or CTRL+ALT+F) opens the foundry's
   window from anywhere — no need to walk to it. One foundry (chain) per planet.
 - **Compatible** with vanilla, Space Age and Nullius.

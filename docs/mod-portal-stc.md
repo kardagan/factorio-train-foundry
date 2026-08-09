@@ -43,8 +43,11 @@ network.
 
 ### How it works
 
-- **Place it anywhere buildable.** The foundry lays its own exit track — no need
-  to prepare a rail first. Just connect your network to the exit afterwards.
+- **Place it anywhere buildable.** While you hold the item (or a ghost for robots),
+  a full preview of the building follows the cursor — in the game view and on the
+  map — so you see exactly where the tracks and walls will land. The foundry lays
+  its own exit track; just connect your network to the exit afterwards. It can even
+  be placed on water: the footprint is filled with landfill automatically.
 - **Pick a train shape.** The foundry's window lists the distinct shapes your
   Smart Train Combinator combinators describe on this surface: solid or fluid,
   wagon type, wagon count, and the storage variant. There is no blueprint chest —
@@ -81,6 +84,10 @@ delivered by your logistics.
 
 ![Chained foundries for longer trains](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/stc-extensions.png)
 
+- **Recycling track.** Tick it in the Configuration window to add a second,
+  dead-end track with a **Train Recycle** stop: route a train onto it and the
+  foundry destroys it and refunds its full cost (vehicles, fuel and cargo) into
+  the stock. A one-way block signal keeps it from backing out.
 - **Circuit network.** Broadcast the stock contents or the components (and fuels)
   still needed.
 - **Clear a stuck train.** If a built train cannot leave, one click destroys it
