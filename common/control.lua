@@ -704,7 +704,15 @@ local function slot_signature(stack)
     return nil
   end
   local ents = stack.get_blueprint_entities()
+  -- La QUALITÉ fait partie de l'identité du plan : deux BP de même label et même
+  -- nombre d'entités mais de qualités différentes sont deux trains différents.
+  -- Sans elle, le cache resservirait le template de l'ancienne qualité.
+  local q = {}
+  for _, e in ipairs(ents or {}) do
+    q[#q + 1] = builder.quality_of(e)
+  end
   return (stack.label or "") .. "#" .. (ents and #ents or 0)
+    .. "#" .. table.concat(q, ",")
 end
 
 -- Resynchronise state.templates depuis le contenu du coffre. Un template par

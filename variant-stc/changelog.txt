@@ -1,4 +1,21 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.1.0
+Date: 2026-08-10
+  Features:
+    - Quality support. Rolling stock is now tracked per quality: a model built from legendary wagons
+      asks for legendary components and builds a legendary train. Quality is shown on the component
+      and reserve slots.
+  Bugfixes:
+    - The wagon quality reported by Smart Train Combinator was ignored: every train came out normal.
+    - Quality components in the reserve were counted as normal ones, so they could be consumed to
+      build a normal train.
+    - Recycling a train refunded normal components regardless of the train quality.
+    - Perishable items (pentapod and biter eggs, Gleba produce) are no longer offered as fuel.
+    - Rolling stock whose placement item differs from its entity name is now resolved correctly.
+  Changes:
+    - In stock mode the circuit connector now emits one signal per item AND quality, instead of one
+      signal per item with all qualities added together.
+---------------------------------------------------------------------------------------------------
 Version: 1.0.0
 Date: 2026-08-07
   Info:

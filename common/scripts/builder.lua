@@ -16,6 +16,70 @@ local builder = {}
 local STOCK_TYPES = { "locomotive", "cargo-wagon", "fluid-wagon",
                       "artillery-wagon" }
 
+-- ===========================================================================
+-- Clé composite (item, qualité)
+-- ---------------------------------------------------------------------------
+-- Les besoins/manques/remboursements sont des maps indexées par ITEM. Depuis le
+-- support de la qualité, deux qualités du même item sont deux composants
+-- DISTINCTS (une loco légendaire ne satisfait pas un besoin de loco normale, et
+-- ne doit pas être consommée pour en fabriquer une). La clé devient donc une
+-- chaîne "nom\0qualité" : sérialisable dans storage (contrairement à une table)
+-- et utilisable telle quelle comme index unique.
+--
+-- COMPAT : les saves d'avant portent des clés nom nu pour un travail DÉJÀ PAYÉ
+-- (phase building/ready, dont le need sert de facture au remboursement). split()
+-- accepte donc une clé sans séparateur et la lit comme qualité normale.
+-- ===========================================================================
+local QSEP = "\0"
+local NORMAL = "normal"
+
+local function qkey(name, quality)
+  return name .. QSEP .. (quality or NORMAL)
+end
+builder.qkey = qkey
+
+-- Clé -> name, quality. Une clé legacy (sans séparateur) vaut qualité normale.
+-- La qualité est validée contre les prototypes : une save faite AVEC le mod
+-- quality puis rouverte SANS lui porterait un nom inconnu, que l'API refuserait
+-- (insert/create_entity lèvent sur une QualityID inexistante).
+local function qsplit(key)
+  local sep = string.find(key, QSEP, 1, true)
+  if not sep then return key, NORMAL end
+  local name = string.sub(key, 1, sep - 1)
+  local quality = string.sub(key, sep + 1)
+  if not prototypes.quality[quality] then return name, NORMAL end
+  return name, quality
+end
+builder.qsplit = qsplit
+
+-- Qualité (string) portée par une entité de blueprint, un stock STC, une entité
+-- vivante ou un ItemIDAndQualityIDPair. Le champ est selon la source : absent,
+-- une string, ou un LuaQualityPrototype (userdata) / une table {name=...}.
+local function quality_of(s)
+  local q = s and s.quality
+  if q == nil then return NORMAL end
+  if type(q) ~= "string" then q = q.name end
+  if not (q and prototypes.quality[q]) then return NORMAL end
+  return q
+end
+builder.quality_of = quality_of
+
+local function qadd(map, name, quality, n)
+  if not (name and n and n > 0) then return end
+  local k = qkey(name, quality)
+  map[k] = (map[k] or 0) + n
+end
+
+-- Rich-text d'un item qualifié : la qualité n'est écrite que si elle n'est pas
+-- normale (un tag nu reste identique à l'historique).
+local function qtag(name, quality)
+  if quality and quality ~= NORMAL then
+    return "[item=" .. name .. ",quality=" .. quality .. "]"
+  end
+  return "[item=" .. name .. "]"
+end
+builder.qtag = qtag
+
 -- Géométrie : voie interne sur la rangée +5, utilisable du mur ouest (-16)
 -- au bout des rails (+18). Tête du train à l'ouest, véhicules espacés de 7.
 local RAIL_Y = 5
@@ -69,15 +133,30 @@ end
 
 -- L'item qui pose cette entité (ex. locomotive nullius = item du même nom ;
 -- on passe par items_to_place_this pour les mods qui divergent).
+-- En 2.0 le champ d'items_to_place_this est `.item` (et non `.name` comme en
+-- 1.1) ; replis pour les wagons moddés qui ne déclarent pas items_to_place_this :
+-- le produit de minage, puis un item de même nom (item-with-entity-data).
 local function place_item_for(entity_name)
   local proto = prototypes.entity[entity_name]
-  local items = proto and proto.items_to_place_this
-  if items and items[1] then return items[1].name end
+  if not proto then return entity_name end
+  local items = proto.items_to_place_this
+  if items and items[1] then
+    local it = items[1]
+    if it.item then return it.item end
+    if it.name then return it.name end
+  end
+  local mp = proto.mineable_properties
+  if mp and mp.products then
+    for _, p in ipairs(mp.products) do
+      if p.type == "item" and p.name then return p.name end
+    end
+  end
   return entity_name
 end
 
--- Item requests d'une entité du blueprint (carburant des locos, munitions
--- d'un wagon d'artillerie...) : map item -> quantité totale.
+-- Item requests d'une entité du blueprint (carburant des locos, munitions d'un
+-- wagon d'artillerie...) : map CLÉ COMPOSITE -> quantité totale. req.id est un
+-- ItemIDAndQualityIDPair, d'où la qualité demandée par le plan.
 local function requested_items(s)
   local out = {}
   for _, req in pairs(s.items or {}) do
@@ -90,7 +169,7 @@ local function requested_items(s)
       end
     end
     if name and total > 0 then
-      out[name] = (out[name] or 0) + total
+      qadd(out, name, quality_of(req.id), total)
     end
   end
   return out
@@ -102,7 +181,8 @@ end
 -- respecter → on remplit au meilleur carburant dispo).
 function builder.template_has_bp_fuel(template)
   for _, s in ipairs(template.stock or {}) do
-    for name in pairs(requested_items(s)) do
+    for key in pairs(requested_items(s)) do
+      local name = qsplit(key)
       local it = prototypes.item[name]
       if it and it.fuel_value and it.fuel_value > 0 then return true end
     end
@@ -132,6 +212,8 @@ end
 -- Équipements présents dans la grille d'un véhicule du blueprint : map item de
 -- l'équipement -> quantité. Ce qui alimente la réserve exactement comme le
 -- carburant (compté, consommé, remboursé) — plus de génération « par magie ».
+-- La qualité facturée ici DOIT être celle que apply_grid pose réellement dans la
+-- grille, sinon un équipement de qualité serait produit au prix du normal.
 local function grid_items(s)
   local out = {}
   for _, comp in pairs(s.grid or {}) do
@@ -139,7 +221,7 @@ local function grid_items(s)
     local eq_name = (type(eq) == "table") and eq.name or eq
     if eq_name then
       local item = item_for_equipment(eq_name)
-      if item then out[item] = (out[item] or 0) + 1 end
+      if item then qadd(out, item, quality_of(eq), 1) end
     end
   end
   return out
@@ -172,6 +254,16 @@ builder.compatible_fuel_categories = compatible_fuel_categories
 -- Carburants DÉBLOQUÉS (une recette enabled de la force les produit) dont la
 -- catégorie est acceptée par les locos, triés par pouvoir calorifique décroissant
 -- (meilleur rendement d'abord). `cats` = set renvoyé par compatible_fuel_categories.
+-- Un item périssable ? get_spoil_ticks est une MÉTHODE (il n'existe pas
+-- d'attribut spoil_ticks) et renvoie 0 — pas nil — pour un item qui ne pourrit
+-- pas : d'où la comparaison explicite, un simple test de véracité exclurait tout.
+local function is_perishable(item_proto)
+  if not (item_proto and item_proto.get_spoil_ticks) then return false end
+  local ok, ticks = pcall(item_proto.get_spoil_ticks, item_proto)
+  return ok and type(ticks) == "number" and ticks > 0
+end
+builder.is_perishable = is_perishable
+
 local function unlocked_fuels(force, cats)
   if not next(cats) then return {} end
   -- Ensemble des items produits par une recette activée de la force.
@@ -186,8 +278,13 @@ local function unlocked_fuels(force, cats)
   local out = {}
   for name in pairs(producible) do
     local it = prototypes.item[name]
+    -- Les PÉRISSABLES sont exclus : œufs (pentapode, biter) et produits Gleba
+    -- (yumako, jellynut, nutrients, bioflux…) sont brûlables mais pourrissent en
+    -- soute. Le critère est générique — aucun vrai carburant ne pourrit — donc
+    -- valable aussi pour les carburants ajoutés par un mod.
     if it and it.fuel_value and it.fuel_value > 0
-       and it.fuel_category and cats[it.fuel_category] then
+       and it.fuel_category and cats[it.fuel_category]
+       and not is_perishable(it) then
       out[#out + 1] = { name = name, fuel_value = it.fuel_value }
     end
   end
@@ -196,11 +293,13 @@ local function unlocked_fuels(force, cats)
 end
 builder.unlocked_fuels = unlocked_fuels
 
--- Nombre de slots de carburant d'une loco (0 si pas de burner).
-local function loco_fuel_slots(loco_name)
+-- Nombre de slots de carburant d'une loco (0 si pas de burner). La qualité est
+-- passée car un mod peut faire varier la taille d'inventaire avec elle : sans
+-- elle, le plein FACTURÉ divergerait du plein réellement inséré au spawn.
+local function loco_fuel_slots(loco_name, quality)
   local proto = prototypes.entity[loco_name]
   if not (proto and proto.burner_prototype) then return 0 end
-  local n = proto.get_inventory_size(defines.inventory.fuel)
+  local n = proto.get_inventory_size(defines.inventory.fuel, quality)
   return n or 0
 end
 
@@ -211,7 +310,7 @@ local function loco_fuel_capacity(stock, fuel)
   if stack <= 0 then return 0 end
   local slots = 0
   for _, s in ipairs(stock or {}) do
-    slots = slots + loco_fuel_slots(s.name)
+    slots = slots + loco_fuel_slots(s.name, quality_of(s))
   end
   return slots * stack
 end
@@ -228,19 +327,21 @@ function builder.compute_need(template, generic)
   local need = {}
   local items = {}
   for _, s in ipairs(template.stock) do
-    local item = place_item_for(s.name)
-    items[item] = (items[item] or 0) + 1
-    for name, n in pairs(requested_items(s)) do
+    -- L'item de placement hérite de la qualité du véhicule blueprinté.
+    qadd(items, place_item_for(s.name), quality_of(s), 1)
+    for key, n in pairs(requested_items(s)) do
+      local name, quality = qsplit(key)
       local it = prototypes.item[name]
       local is_fuel = it and it.fuel_value and it.fuel_value > 0
       -- En générique on ignore le carburant du BP (volet fuel s'en charge) ; en
       -- mode BP historique on le garde comme composant.
       if (not is_fuel) or (not generic) then
-        items[name] = (items[name] or 0) + n
+        qadd(items, name, quality, n)
       end
     end
-    for name, n in pairs(grid_items(s)) do
-      items[name] = (items[name] or 0) + n
+    for key, n in pairs(grid_items(s)) do
+      local name, quality = qsplit(key)
+      qadd(items, name, quality, n)
     end
   end
   need.items = items
@@ -267,7 +368,10 @@ local function pick_fuel(state, fuel_need)
   local candidates = unlocked_fuels(force, fuel_need.categories)
   for _, c in ipairs(candidates) do  -- meilleur fuel_value d'abord
     local cap = loco_fuel_capacity(fuel_need.stock, c.name)
-    if cap > 0 and inv.get_item_count(c.name) >= cap then
+    -- Carburant volontairement limité à la qualité NORMALE (choix générique non
+    -- encore ouvert à la qualité) : compter toutes qualités confondues ferait
+    -- consommer du carburant de qualité pour un plein ordinaire.
+    if cap > 0 and inv.get_item_count({ name = c.name, quality = NORMAL }) >= cap then
       return c.name, cap
     end
   end
@@ -290,7 +394,7 @@ function builder.fuel_candidates(state, need)
       out[#out + 1] = {
         name = c.name,
         need = full,
-        have = inv and inv.get_item_count(c.name) or 0,
+        have = inv and inv.get_item_count({ name = c.name, quality = NORMAL }) or 0,
       }
     end
   end
@@ -308,11 +412,15 @@ function builder.missing(state, need)
   local inv = shared_inventory(state)
   local items = need.items or need   -- compat : ancien need plat = les items
   local miss, parts = {}, {}
-  for item, n in pairs(items) do
-    local have = inv and inv.get_item_count(item) or 0
+  for key, n in pairs(items) do
+    local name, quality = qsplit(key)
+    -- get_item_count(name) additionnerait TOUTES les qualités : on interroge
+    -- la réserve sur le couple exact, sinon du légendaire « satisfait » un
+    -- besoin de normal (puis se fait consommer à sa place).
+    local have = inv and inv.get_item_count({ name = name, quality = quality }) or 0
     if have < n then
-      miss[item] = n - have
-      parts[#parts + 1] = "[item=" .. item .. "]×" .. (n - have)
+      miss[key] = n - have
+      parts[#parts + 1] = qtag(name, quality) .. "×" .. (n - have)
     end
   end
 
@@ -340,12 +448,15 @@ function builder.consume(state, need, fuel_item)
   local inv = shared_inventory(state)
   if not inv then return end
   local items = need.items or need
-  for item, n in pairs(items) do
-    inv.remove({ name = item, count = n })
+  for key, n in pairs(items) do
+    local name, quality = qsplit(key)
+    inv.remove({ name = name, quality = quality, count = n })
   end
   if fuel_item and need.fuel then
     local cap = loco_fuel_capacity(need.fuel.stock, fuel_item)
-    if cap > 0 then inv.remove({ name = fuel_item, count = cap }) end
+    if cap > 0 then
+      inv.remove({ name = fuel_item, quality = NORMAL, count = cap })
+    end
   end
 end
 
@@ -356,18 +467,25 @@ function builder.refund(state, need, fuel_item)
   local inv = shared_inventory(state)
   local e = state.entity
   local items = need.items or need
+  -- Les clés d'un need issu d'une save antérieure au support de la qualité sont
+  -- des noms nus : qsplit les rend en qualité normale, ce qui correspond bien à
+  -- ce qui avait été prélevé à l'époque.
   local to_refund = {}
-  for item, n in pairs(items or {}) do to_refund[item] = n end
+  for key, n in pairs(items or {}) do to_refund[key] = n end
   if fuel_item and need.fuel then
     local cap = loco_fuel_capacity(need.fuel.stock, fuel_item)
-    if cap > 0 then to_refund[fuel_item] = (to_refund[fuel_item] or 0) + cap end
+    if cap > 0 then
+      local k = qkey(fuel_item, NORMAL)
+      to_refund[k] = (to_refund[k] or 0) + cap
+    end
   end
-  for item, n in pairs(to_refund) do
-    local inserted = inv and inv.insert({ name = item, count = n }) or 0
+  for key, n in pairs(to_refund) do
+    local name, quality = qsplit(key)
+    local inserted = inv and inv.insert({ name = name, quality = quality, count = n }) or 0
     if inserted < n and e and e.valid then
       e.surface.spill_item_stack({
         position = e.position,
-        stack = { name = item, count = n - inserted },
+        stack = { name = name, quality = quality, count = n - inserted },
         enable_looted = true,
         force = e.force,
       })
@@ -412,20 +530,20 @@ end
 function builder.scrap_vehicles(state, vehicles)
   if not vehicles or #vehicles == 0 then return 0 end
   local refund = {}
-  local function add(name, n)
-    if name and n and n > 0 then refund[name] = (refund[name] or 0) + n end
-  end
   local count = 0
   for _, v in ipairs(vehicles) do
     if v.valid then
       count = count + 1
-      add(place_item_for(v.name), 1)  -- le véhicule lui-même
+      -- Le véhicule lui-même, dans SA qualité (v.quality est un LuaQualityPrototype).
+      qadd(refund, place_item_for(v.name), quality_of(v), 1)
       -- Contenu de tous ses inventaires (fuel, cargo, munitions...).
       for i = 1, v.get_max_inventory_index() do
         local inv = v.get_inventory(i)
         if inv then
           -- get_contents (2.0) = liste de { name, count, quality }.
-          for _, it in pairs(inv.get_contents()) do add(it.name, it.count) end
+          for _, it in pairs(inv.get_contents()) do
+            qadd(refund, it.name, it.quality, it.count)
+          end
         end
       end
     end
@@ -598,6 +716,7 @@ function builder.spawn(state, template, params, fuel_item, generic)
     end
     local v = e.surface.create_entity({
       name = s.name,
+      quality = quality_of(s),
       position = { e.position.x + HEAD_X + slot * SPACING,
                    e.position.y + RAIL_Y },
       direction = dir,
@@ -624,14 +743,15 @@ function builder.spawn(state, template, params, fuel_item, generic)
   --     trouvé dans la réserve (prélevé au passage) — sécurité, ne devrait servir
   --     que pour un template legacy sans volet fuel.
   for i, v in ipairs(spawned) do
-    for name, n in pairs(requested_items(template.stock[i])) do
+    for key, n in pairs(requested_items(template.stock[i])) do
+      local name, quality = qsplit(key)
       local ip = prototypes.item[name]
       local is_fuel = ip and ip.fuel_value and ip.fuel_value > 0
       -- Non-carburant (munitions…) : toujours inséré. Carburant du BP : inséré
       -- UNIQUEMENT en mode BP historique (generic=false) ; en générique le
       -- carburant est géré par fuel_item ci-dessous.
       if (not is_fuel) or (not generic) then
-        v.insert({ name = name, count = n })
+        v.insert({ name = name, quality = quality, count = n })
       end
     end
     -- Remplissage carburant GÉNÉRIQUE seulement (STC / BP option cochée). En mode
@@ -644,7 +764,7 @@ function builder.spawn(state, template, params, fuel_item, generic)
           local stack = prototypes.item[fuel_item] and prototypes.item[fuel_item].stack_size or 0
           local slots = #fi
           if stack > 0 and slots > 0 then
-            fi.insert({ name = fuel_item, count = stack * slots })
+            fi.insert({ name = fuel_item, quality = NORMAL, count = stack * slots })
           end
         elseif inv then
           -- Repli : premier carburant compatible dispo en réserve, une pile.
@@ -652,10 +772,16 @@ function builder.spawn(state, template, params, fuel_item, generic)
           if bp then
             for _, it in pairs(inv.get_contents()) do
               local ip = prototypes.item[it.name]
-              if ip and ip.fuel_category and bp.fuel_categories[ip.fuel_category] then
+              if ip and ip.fuel_category and bp.fuel_categories[ip.fuel_category]
+                 and not is_perishable(ip) then
                 local count = math.min(it.count, ip.stack_size)
-                local inserted = fi.insert({ name = it.name, count = count })
-                if inserted > 0 then inv.remove({ name = it.name, count = inserted }) end
+                -- insert ET remove sur le MÊME couple : sans la qualité, le
+                -- moteur pourrait retirer une autre pile que celle insérée.
+                local q = it.quality
+                local inserted = fi.insert({ name = it.name, quality = q, count = count })
+                if inserted > 0 then
+                  inv.remove({ name = it.name, quality = q, count = inserted })
+                end
                 break
               end
             end
@@ -771,12 +897,12 @@ function builder.update_circuit(state)
 
   local mode = state.emit_mode or "stock"
 
-  local acc = {}  -- name -> quantité cumulée
+  local acc = {}  -- clé composite (name, quality) -> quantité cumulée
   if mode == "stock" then
     local inv = shared_inventory(state)
     if inv then
       for _, it in pairs(inv.get_contents()) do
-        acc[it.name] = (acc[it.name] or 0) + it.count
+        qadd(acc, it.name, it.quality, it.count)
       end
     end
   end
@@ -787,24 +913,25 @@ function builder.update_circuit(state)
     -- d'un train déjà en cours).
     if state.work and state.work.phase == "waiting" and state.work.need then
       local miss = builder.missing(state, state.work.need)
-      for item, n in pairs(miss) do acc[item] = (acc[item] or 0) + n end
+      for key, n in pairs(miss) do acc[key] = (acc[key] or 0) + n end
       -- Carburant : on demande le PLEIN pour CHAQUE carburant candidat, pour
       -- qu'au moins un arrive par la logistique. Dès qu'un carburant satisfait le
       -- plein (have >= need), la prod part et ce bloc n'est plus atteint. On
       -- n'ajoute la demande que pour les carburants pas encore au plein.
       for _, f in ipairs(builder.fuel_candidates(state, state.work.need)) do
         if f.have < f.need then
-          acc[f.name] = (acc[f.name] or 0) + (f.need - f.have)
+          qadd(acc, f.name, NORMAL, f.need - f.have)
         end
       end
     end
   end
 
   local filters = {}
-  for name, count in pairs(acc) do
+  for key, count in pairs(acc) do
     if count ~= 0 then
+      local name, quality = qsplit(key)
       filters[#filters + 1] = {
-        value = { type = "item", name = name, quality = "normal" },
+        value = { type = "item", name = name, quality = quality },
         min = count,
       }
     end

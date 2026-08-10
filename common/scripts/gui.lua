@@ -545,20 +545,25 @@ function gui.refresh_work(player, state)
   -- need.items = composants (map item->count). Compat : un ancien need plat reste
   -- itérable tel quel.
   local need_items = (work.need and work.need.items) or work.need or {}
-  for item, n in pairs(need_items) do
+  for key, n in pairs(need_items) do
+    -- Les clés sont composites (item, qualité) ; un need d'une save antérieure
+    -- porte des noms nus, que qsplit rend en qualité normale.
+    local item, quality = builder.qsplit(key)
     local miss = work.phase == "waiting" and work.missing
-      and work.missing[item] or 0
+      and work.missing[key] or 0
     local have = math.max(0, n - miss)
     local col = comps.add({ type = "flow", direction = "vertical" })
     col.style.vertical_align = "center"
     col.style.horizontal_align = "center"
-    col.add({
+    local btn = col.add({
       type = "sprite-button",
       style = (miss > 0) and "tf_slot_missing" or "tf_slot_ok",
       sprite = "item/" .. item,
+      quality = quality,
       tooltip = prototypes.item[item] and prototypes.item[item].localised_name or item,
       tags = { tf_ipedia = item },  -- clic → Factoriopedia
     })
+    btn.elem_tooltip = { type = "item-with-quality", name = item, quality = quality }
     local ratio = col.add({
       type = "label",
       caption = have .. "/" .. n,
@@ -636,13 +641,16 @@ function gui.refresh_stock(player, state)
   for i = 1, #inv do
     local stack = inv[i]
     if stack.valid_for_read then
-      table_el.add({
+      local q = builder.quality_of(stack)
+      local slot = table_el.add({
         type = "sprite-button",
         style = "inventory_slot",
         sprite = "item/" .. stack.name,
+        quality = q,
         number = stack.count,
         ignored_by_interaction = true,
       })
+      slot.elem_tooltip = { type = "item-with-quality", name = stack.name, quality = q }
     else
       table_el.add({
         type = "sprite-button",
