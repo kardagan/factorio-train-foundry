@@ -154,6 +154,27 @@ local function place_item_for(entity_name)
   return entity_name
 end
 
+-- Matériel roulant d'un template groupé par (item de placement, qualité), dans
+-- l'ordre de rencontre : liste de { item, quality, count }. Sert à étiqueter les
+-- tuiles du livre / des modèles avec les VRAIES icônes du plan et leur qualité —
+-- deux trains de même forme mais de qualités ≠ sont autrement indiscernables.
+function builder.template_stock_groups(template)
+  local index, out = {}, {}
+  for _, s in ipairs((template and template.stock) or {}) do
+    local item = place_item_for(s.name)
+    local quality = quality_of(s)
+    local k = qkey(item, quality)
+    local at = index[k]
+    if at then
+      out[at].count = out[at].count + 1
+    else
+      out[#out + 1] = { item = item, quality = quality, count = 1 }
+      index[k] = #out
+    end
+  end
+  return out
+end
+
 -- Item requests d'une entité du blueprint (carburant des locos, munitions d'un
 -- wagon d'artillerie...) : map CLÉ COMPOSITE -> quantité totale. req.id est un
 -- ItemIDAndQualityIDPair, d'où la qualité demandée par le plan.
@@ -636,22 +657,36 @@ end
 -- rich-text et tout signal dont le nom correspond à un paramètre connu.
 local RICH_KIND = { item = "item", fluid = "fluid", virtual = "virtual-signal" }
 
+-- Le CORPS d'une balise capte aussi ce qui suit le nom (",quality=…") : sans cela
+-- un tag déjà qualifié ne serait pas reconnu et resterait tel quel, placeholder
+-- compris. L'id du paramètre est la partie AVANT la virgule.
 local function subst_station(name, params)
   if not (params and name) then return name end
-  return (name:gsub("%[([%a%-]+)=([%w%-_]+)%]", function(kind, id)
+  return (name:gsub("%[([%a%-]+)=([^%]]+)%]", function(kind, body)
+    local id = body:match("^([^,]+)") or body
     local p = params[id]
     if p and p.name then
-      return "[" .. (RICH_KIND[p.type] or "item") .. "=" .. p.name .. "]"
+      -- Un fluide n'a jamais de qualité ; un item la porte si elle n'est pas
+      -- normale (même règle que les noms de gares STC, comparés byte-à-byte).
+      local ptype = RICH_KIND[p.type] or "item"
+      local suffix = ""
+      if ptype == "item" and p.quality and p.quality ~= NORMAL then
+        suffix = ",quality=" .. p.quality
+      end
+      return "[" .. ptype .. "=" .. p.name .. suffix .. "]"
     end
-    return "[" .. kind .. "=" .. id .. "]"
+    return "[" .. kind .. "=" .. body .. "]"
   end))
 end
+
+builder.subst_station = subst_station
 
 local function subst_signal(sig, params)
   if params and sig and sig.name and params[sig.name] then
     local p = params[sig.name]
     if p.name then
-      return { type = p.type, name = p.name }
+      -- La qualité du signal choisi est conservée (un SignalID la porte).
+      return { type = p.type, name = p.name, quality = p.quality }
     end
   end
   return sig

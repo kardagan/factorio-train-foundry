@@ -42,20 +42,6 @@ local ALLOWED_EXTRA_TYPES = {
   ["train-stop"] = true,
 }
 
--- Compte par type pour les messages ("2 locomotives + 4 wagons").
-function blueprint.counts(template)
-  local locos, wagons = 0, 0
-  for _, e in ipairs(template.stock) do
-    local proto = prototypes.entity[e.name]
-    if proto and proto.type == "locomotive" then
-      locos = locos + 1
-    else
-      wagons = wagons + 1
-    end
-  end
-  return locos, wagons
-end
-
 -- Ce que le joueur a « en main » comme blueprint : soit un vrai item
 -- (LuaItemStack, BP de l'inventaire), soit un enregistrement de la
 -- BIBLIOTHÈQUE de blueprints (LuaRecord — dans ce cas cursor_stack est

@@ -4,9 +4,14 @@ Date: 2026-08-10
   Features:
     - Quality support. Rolling stock is now tracked per quality: a model built from legendary wagons
       asks for legendary components and builds a legendary train. Quality is shown on the component
-      and reserve slots.
+      and reserve slots, and as a badge on the model tiles.
+    - The model list now shows the locomotive alongside the wagons, so the counters match the
+      components actually drawn from the reserve.
   Bugfixes:
     - The wagon quality reported by Smart Train Combinator was ignored: every train came out normal.
+    - Generated station names now carry the wagon and resource quality, matching Smart Train
+      Combinator 1.8.0. A normal-quality shape still produces the exact same name as before, so
+      existing stations and hand-written interrupts keep matching.
     - Quality components in the reserve were counted as normal ones, so they could be consumed to
       build a normal train.
     - Recycling a train refunded normal components regardless of the train quality.

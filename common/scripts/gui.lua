@@ -12,7 +12,6 @@
 -- rafraîchies par la boucle de production.
 
 local names = require("names")
-local blueprint = names.has_bpchest and require("scripts.blueprint") or nil
 local builder = require("scripts.builder")
 
 local gui = {}
@@ -105,6 +104,21 @@ local ICON_SZ = 32
 local ICON_GAP = 4
 local TILE_PAD = 10
 
+-- Badge de qualité posé sur le coin bas-gauche d'une icône de tuile. Le chemin
+-- est VALIDÉ (un sprite invalide ne plante qu'à l'AFFICHAGE, pas au chargement) et
+-- mis en cache ; nil pour la qualité normale, qui ne s'affiche pas.
+local QUALITY_BADGE = 13
+local quality_sprite_cache = {}
+local function quality_sprite(quality)
+  if not quality or quality == "normal" then return nil end
+  local hit = quality_sprite_cache[quality]
+  if hit ~= nil then return hit or nil end
+  local path = "quality/" .. quality
+  local ok = helpers.is_valid_sprite_path(path) and path or false
+  quality_sprite_cache[quality] = ok
+  return ok or nil
+end
+
 local TILE_ICONS = 5   -- largeur FIXE en icônes (loco + wagon + 2 chiffres + storage)
 local function bp_wide_tile(parent, sigs, args)
   -- Largeur FIXE (TILE_ICONS icônes) pour que les titres restent alignés d'une
@@ -148,9 +162,23 @@ local function bp_wide_tile(parent, sigs, args)
     strip.style.left_margin = TILE_PAD
     strip.style.horizontal_spacing = ICON_GAP
     for _, p in ipairs(sigs) do
-      local ic = strip.add({ type = "sprite", sprite = p })
+      -- Une entrée est soit un chemin de sprite, soit {sprite=, quality=} : le
+      -- badge de qualité est un SECOND sprite posé sur le coin du premier (un
+      -- élément `sprite` n'a pas de propriété `quality`, contrairement aux boutons).
+      local path = (type(p) == "table") and p.sprite or p
+      local cell = strip.add({ type = "flow", direction = "vertical" })
+      cell.style.width = ICON_SZ
+      cell.style.height = ICON_SZ
+      local ic = cell.add({ type = "sprite", sprite = path })
       ic.style.size = ICON_SZ
       ic.style.stretch_image_to_widget_size = true
+      local qpath = (type(p) == "table") and quality_sprite(p.quality) or nil
+      if qpath then
+        local badge = cell.add({ type = "sprite", sprite = qpath })
+        badge.style.size = QUALITY_BADGE
+        badge.style.stretch_image_to_widget_size = true
+        badge.style.top_margin = -QUALITY_BADGE   -- remonte sur l'icône
+      end
     end
   end
   return box
@@ -189,12 +217,65 @@ local function bp_square_tile(parent, sigs, args)
     grid.style.top_margin = SQ_PAD - SQ
     grid.style.left_margin = SQ_PAD
     for k = 1, math.min(4, #sigs) do
-      local ic = grid.add({ type = "sprite", sprite = sigs[k] })
+      local p = sigs[k]
+      local path = (type(p) == "table") and p.sprite or p
+      local cell = grid.add({ type = "flow", direction = "vertical" })
+      cell.style.width = SQ_ICON
+      cell.style.height = SQ_ICON
+      local ic = cell.add({ type = "sprite", sprite = path })
       ic.style.size = SQ_ICON
       ic.style.stretch_image_to_widget_size = true
+      local qpath = (type(p) == "table") and quality_sprite(p.quality) or nil
+      if qpath then
+        local badge = cell.add({ type = "sprite", sprite = qpath })
+        badge.style.size = QUALITY_BADGE
+        badge.style.stretch_image_to_widget_size = true
+        badge.style.top_margin = -QUALITY_BADGE
+      end
     end
   end
   return box
+end
+
+-- Compteurs du matériel roulant d'un template : « [icône]×N » par couple
+-- (item, qualité). Les icônes sont celles du plan (pas des génériques) et le
+-- rich-text porte la qualité, qui s'affiche nativement en chevron — deux trains
+-- de même forme et de qualités ≠ sont autrement identiques à l'écran.
+-- Tag rich-text d'un type de matériel roulant, qualité comprise. Passe par
+-- l'ITEM de placement (le tag [item=…] accepte la qualité et c'est la forme que
+-- pose le sélecteur rich-text) ; repli sur [entity=…] pour un wagon moddé qui ne
+-- déclare pas d'item.
+local function wagon_tag(entity_name, quality)
+  local proto = prototypes.entity[entity_name]
+  local place = proto and proto.items_to_place_this
+  local item = place and place[1] and (place[1].item or place[1].name)
+  if item then return builder.qtag(item, quality) end
+  return "[entity=" .. entity_name .. "]"
+end
+
+-- Qualité COMMUNE à tout le matériel roulant d'un template, ou nil si le train
+-- est normal ou mélange les qualités. Sert au badge des tuiles, qui ne peut porter
+-- qu'une seule qualité.
+local function uniform_quality(template)
+  local groups = builder.template_stock_groups(template)
+  local q = nil
+  for _, g in ipairs(groups) do
+    if q == nil then q = g.quality
+    elseif q ~= g.quality then return nil end
+  end
+  if q == "normal" then return nil end
+  return q
+end
+
+-- Une chaîne localisée n'accepte que 20 paramètres : on concatène en Lua (les
+-- tags rich-text n'ont pas besoin d'être des paramètres séparés) pour qu'un train
+-- long et hétérogène ne fasse pas déborder la limite.
+local function stock_caption(template)
+  local parts = {}
+  for _, g in ipairs(builder.template_stock_groups(template)) do
+    parts[#parts + 1] = builder.qtag(g.item, g.quality) .. " " .. g.count
+  end
+  return table.concat(parts, "  ")
 end
 
 -- Chemin de sprite d'un type de matériel roulant (entité), avec repli si le
@@ -273,11 +354,17 @@ function gui.refresh_stc_models(player, state, list)
     -- Icônes de la tuile : loco + 1 wagon + le nombre N en signaux-chiffres
     -- (signal-0..9, un par chiffre) + le marqueur storage. Une seule icône wagon
     -- (le compte est porté par les chiffres), donc lisible quel que soit N.
+    -- Loco et wagon portent le badge de la qualité du modèle ; les chiffres et le
+    -- marqueur storage sont des signaux, donc sans qualité.
     local sigs = {}
     local lsprite = rolling_stock_sprite(loco_of(m.wagon_type))
-    if lsprite then sigs[#sigs + 1] = lsprite end
+    if lsprite then
+      sigs[#sigs + 1] = { sprite = lsprite, quality = m.wagon_quality }
+    end
     local wsprite = rolling_stock_sprite(m.wagon_type)
-    if wsprite then sigs[#sigs + 1] = wsprite end
+    if wsprite then
+      sigs[#sigs + 1] = { sprite = wsprite, quality = m.wagon_quality }
+    end
     for _, d in ipairs(digit_sprites(nw)) do sigs[#sigs + 1] = d end
     if m.storage and helpers.is_valid_sprite_path("virtual-signal/stc2-storage") then
       sigs[#sigs + 1] = "virtual-signal/stc2-storage"
@@ -302,9 +389,16 @@ function gui.refresh_stc_models(player, state, list)
       caption = { "tf-gui.stc-model-name", kind_lbl, nw, storage_suffix },
     })
     name.style.font = "default-semibold"
+    -- Même ligne de compteurs qu'en mode BP (loco COMPRISE, chacune avec sa
+    -- qualité) : c'est le matériel réellement demandé à la réserve. On la dérive
+    -- du stock synthétique du modèle, pour ne pas réinventer la composition ici.
+    local m_stock = { { name = loco_of(m.wagon_type), quality = m.wagon_quality } }
+    for _ = 1, nw do
+      m_stock[#m_stock + 1] = { name = m.wagon_type, quality = m.wagon_quality }
+    end
     local sub = info.add({
       type = "label",
-      caption = "[entity=" .. m.wagon_type .. "] × " .. nw,
+      caption = stock_caption({ stock = m_stock }),
     })
     sub.style.font_color = { 0.8, 0.8, 0.8 }
     end  -- if m.wagon_type
@@ -351,12 +445,17 @@ function gui.refresh_templates(player, state)
     row.style.vertical_align = "center"
     row.style.bottom_margin = 6  -- espace entre les lignes de la liste
 
-    -- Un seul fond bleu encadrant les icônes du plan (1 à 4) en rangée.
+    -- Un seul fond bleu encadrant les icônes du plan (1 à 4) en rangée. Les icônes
+    -- du plan ne portent pas de qualité : on badge avec celle du MATÉRIEL ROULANT,
+    -- la seule qui compte ici, et seulement si le train est homogène (un plan
+    -- mélangeant les qualités n'a pas de badge unique honnête — le détail est sur
+    -- la ligne de compteurs).
     local sigs = {}
+    local tq = uniform_quality(t)
     if t.icons then
       for k = 1, math.min(4, #t.icons) do
         local p = t.icons[k].signal and sprite_of(t.icons[k].signal)
-        if p then sigs[#sigs + 1] = p end
+        if p then sigs[#sigs + 1] = { sprite = p, quality = tq } end
       end
     end
 
@@ -366,9 +465,7 @@ function gui.refresh_templates(player, state)
               { "tf-msg." .. t.invalid, t.invalid_detail or "" },
               "[/color]" }
     else
-      local locos, wagons = blueprint.counts(t)
-      tip = { "", title, "\n", locos, " × [item=locomotive]  ",
-              wagons, " × [item=cargo-wagon]", "\n",
+      tip = { "", title, "\n", stock_caption(t), "\n",
               { "tf-gui.slot-filled-queue" } }
     end
 
@@ -419,14 +516,12 @@ function gui.refresh_templates(player, state)
       why.style.single_line = false
       why.style.maximal_width = 200
     else
-      local locos, wagons = blueprint.counts(t)
       local counts = info.add({ type = "flow", direction = "horizontal" })
       counts.style.vertical_align = "center"
       counts.style.top_margin = 2
       local lc = counts.add({
         type = "label",
-        caption = { "", "[item=locomotive] ", locos, "    ",
-                    "[item=cargo-wagon] ", wagons },
+        caption = stock_caption(t),
       })
       lc.style.font_color = { 0.8, 0.8, 0.8 }
     end
@@ -1050,10 +1145,14 @@ function gui.open_params(player, state, index, template, stc_index, res_kind)
       })
       label.style.horizontally_stretchable = true
       label.style.minimal_width = 120
-      -- Picker restreint au kind connu (STC) sinon signal générique (BP).
+      -- Picker restreint au kind connu (STC) sinon signal générique (BP). Pour un
+      -- ITEM on prend « item-with-quality » : le picker « item » nu ne permet pas
+      -- de CHOISIR une qualité, or elle entre dans le nom de gare substitué.
+      local elem_type = res_kind or "signal"
+      if elem_type == "item" then elem_type = "item-with-quality" end
       row.add({
         type = "choose-elem-button",
-        elem_type = res_kind or "signal",
+        elem_type = elem_type,
         tags = { tf_param = p.id or ("parameter-" .. (i - 1)),
                  tf_param_kind = res_kind },
       })
@@ -1081,10 +1180,14 @@ function gui.collect_params(player)
       if el.type == "choose-elem-button" and el.tags.tf_param then
         local v = el.elem_value
         if v then
-          -- Picker signal → v = {type,name} ; picker item/fluid → v = nom (string),
-          -- le type vient alors du kind du bouton (tf_param_kind).
+          -- Picker signal → v = {type,name} ; item-with-quality → v = {name,quality}
+          -- (sans type, d'où le repli "item") ; picker fluide → v = nom (string),
+          -- le type vient alors du kind du bouton. La QUALITÉ choisie est conservée :
+          -- elle entre dans les noms de gares substitués, qui doivent matcher ceux
+          -- de STC au byte près.
           if type(v) == "table" then
-            params[el.tags.tf_param] = { type = v.type or "item", name = v.name }
+            params[el.tags.tf_param] = { type = v.type or "item", name = v.name,
+                                         quality = builder.quality_of(v) }
           else
             params[el.tags.tf_param] = { type = el.tags.tf_param_kind or "item", name = v }
           end
@@ -1114,17 +1217,34 @@ end
 
 -- Chemins de sprites des icônes d'un blueprint (1 à 4), pour poser dessus la
 -- tuile bleue. Vide si le plan n'a pas d'icône exploitable.
-local function bp_stack_sigs(stack)
+local function bp_stack_sigs(stack, quality)
   local sigs = {}
   -- 2.0 : la propriété s'appelle preview_icons (ex-blueprint_icons en 1.1).
   local ok, icons = pcall(function() return stack.preview_icons end)
   if ok and icons then
     for k = 1, math.min(4, #icons) do
       local p = icons[k].signal and sprite_of(icons[k].signal)
-      if p then sigs[#sigs + 1] = p end
+      if p then sigs[#sigs + 1] = { sprite = p, quality = quality } end
     end
   end
   return sigs
+end
+
+-- Matériel roulant d'un plan du coffre (nil si le plan n'en contient pas). Lit les
+-- entités du plan, pas le template : la grille du coffre reflète le coffre, y
+-- compris les plans non encore importés.
+local ROLLING = { locomotive = true, ["cargo-wagon"] = true,
+                  ["fluid-wagon"] = true, ["artillery-wagon"] = true }
+local function bp_stack_stock(stack)
+  local ok, ents = pcall(function() return stack.get_blueprint_entities() end)
+  if not (ok and ents) then return nil end
+  local stock = {}
+  for _, e in ipairs(ents) do
+    local proto = prototypes.entity[e.name]
+    if proto and ROLLING[proto.type] then stock[#stock + 1] = e end
+  end
+  if #stock == 0 then return nil end
+  return stock
 end
 
 -- (Re)remplit la grille de slots depuis l'inventaire du coffre. Slot occupé =
@@ -1147,7 +1267,15 @@ function gui.refresh_bp(player, state)
     if stack.valid_for_read then
       local tip = (stack.label and stack.label ~= "" and stack.label)
         or { "tf-gui.bp-slot-filled" }
-      bp_square_tile(grid, bp_stack_sigs(stack), {
+      -- Les slots du coffre n'ont pas de place pour un libellé : le matériel du
+      -- plan (icônes qualifiées) passe par le tooltip, et la qualité du train
+      -- badge les icônes de la tuile.
+      local bstock = bp_stack_stock(stack)
+      if bstock then
+        tip = { "", tip, "\n", stock_caption({ stock = bstock }) }
+      end
+      local bq = bstock and uniform_quality({ stock = bstock }) or nil
+      bp_square_tile(grid, bp_stack_sigs(stack, bq), {
         tooltip = tip,
         tags = { tf_action = "bp-slot", index = i },
       })

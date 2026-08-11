@@ -4,7 +4,10 @@ Date: 2026-08-10
   Features:
     - Quality support. Rolling stock, item requests and equipment-grid gear are now tracked per
       quality: a blueprint made of legendary stock asks for legendary components and builds a
-      legendary train. Quality is shown on the component and reserve slots.
+      legendary train. Quality is shown on the component and reserve slots, as a badge on the
+      blueprint tiles, and on the per-plan stock counters.
+    - The stock counters now use the plan's actual rolling stock icons instead of a generic
+      locomotive and cargo wagon.
   Bugfixes:
     - Quality components in the reserve were counted as normal ones, so they could be consumed to
       build a normal train.

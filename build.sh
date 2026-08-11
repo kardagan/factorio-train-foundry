@@ -108,7 +108,10 @@ for d in data.get("dependencies", []):
 if variant == "stc":
     # Dépendance OBLIGATOIRE (pas optionnelle) : la variante STC lit les modèles via
     # remote.call vers smart-train-combinator ; sans lui elle n'a aucun sens.
-    deps.append("smart-train-combinator >= 1.6.0")
+    # >= 1.8.0 : c'est la version qui écrit la QUALITÉ dans les noms de gares. Les
+    # noms générés ici doivent lui correspondre au byte près (matching des gares et
+    # des interruptions) — avec une 1.7.x, un train de qualité ne trouverait plus sa gare.
+    deps.append("smart-train-combinator >= 1.8.0")
 data["dependencies"] = deps
 with open(path, "w") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)

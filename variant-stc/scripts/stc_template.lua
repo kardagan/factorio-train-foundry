@@ -113,19 +113,33 @@ local function wagon_item_name(proto, entity_name)
   return nil
 end
 
+-- Suffixe de qualité d'un tag rich-text. Émis UNIQUEMENT pour une qualité NON
+-- normale : une forme en qualité normale doit continuer à produire la chaîne
+-- d'avant la qualité, sinon tous les noms de gares existants (et les
+-- interruptions écrites à la main qui les visent) changeraient. MÊME règle que
+-- STC quality_suffix — le matching des gares est une comparaison byte-à-byte.
+local function quality_suffix(quality)
+  return (quality and quality ~= "normal") and (",quality=" .. quality) or ""
+end
+
 -- Run d'icône wagon dans le nom : jusqu'à 5 icônes répétées (format HISTORIQUE de
 -- STC, inchangé → compat des gares/interruptions existantes préservée), au-delà
 -- "icône×N" (compact, sinon le nom dépasse la limite ~200 car et est tronqué
--- mid-tag). MÊME règle et MÊME seuil que STC wagon_run. [item=<place-item>], repli
--- [entity=]. wagon_item_name = même résolution que STC (champ .item en 2.0).
+-- mid-tag ; le × est U+00D7, pas un x ASCII). MÊME règle et MÊME seuil que STC
+-- wagon_run, suffixe de qualité inclus. [item=<place-item>], repli [entity=].
+-- wagon_item_name = même résolution que STC (champ .item en 2.0).
 local WAGON_ICON_MAX = 5
-local function wagon_run(wagon_type, n)
+local function wagon_run(wagon_type, n, quality)
+  local suffix = quality_suffix(quality)
   local proto = prototypes.entity[wagon_type]
   local item = proto and wagon_item_name(proto, wagon_type)
-  local tag = item and ("[item=" .. item .. "]") or ("[entity=" .. wagon_type .. "]")
+  local tag = item and ("[item=" .. item .. suffix .. "]")
+    or ("[entity=" .. wagon_type .. suffix .. "]")
   if n <= WAGON_ICON_MAX then return string.rep(tag, n) end
   return tag .. "×" .. n
 end
+
+stc_template.wagon_run = wagon_run
 
 -- Libellé du kind pour le nom de l'interruption de déchargement (anglais, pour
 -- un mod international).
@@ -145,7 +159,7 @@ end
 function stc_template.build(model)
   local n      = math.max(1, model.wagons or 1)
   local loco   = locomotive_for(model.wagon_type)
-  local wagons = wagon_run(model.wagon_type, n)
+  local wagons = wagon_run(model.wagon_type, n, model.wagon_quality)
   local group  = model.group or ""
   local prefix = tf_prefix()  -- icône TF devant le groupe et les interruptions
   local slots  = fuel_slots(loco)              -- 0 si loco solaire
