@@ -1,4 +1,22 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.2.0
+Date: 2026-08-12
+  Features:
+    - Accepted fuels window. A new window (gear button in Configuration) lists every unlocked fuel a
+      locomotive can burn, with one checkbox per quality; clicking a fuel icon ticks or unticks its
+      whole row, and clicking a quality header does the same for its whole column. Only ticked fuels
+      are burned and requested over the circuit, and the best one available in the buffer is picked
+      -- highest fuel value first, then highest quality -- so "solid fuel legendary, otherwise rare,
+      otherwise normal" just works. Left untouched, every fuel is accepted in normal quality,
+      exactly as before.
+  Changes:
+    - Circuit rework. The circuit connector is now an electric pole, and the buffer contents and the
+      missing components are two independent outputs: enable either or both, and pick the wire
+      (red, green, or both) each one goes out on. The stock/requests radio is gone -- no more single
+      mode to choose -- and the pole doubles as a power connection point for the building.
+      Existing setups are migrated: whichever mode was selected stays enabled, on both wires, so a
+      wire already plugged in keeps carrying exactly what it carried before.
+---------------------------------------------------------------------------------------------------
 Version: 1.1.0
 Date: 2026-08-10
   Features:

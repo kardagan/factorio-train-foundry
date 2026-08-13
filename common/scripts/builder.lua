@@ -11,6 +11,11 @@
 -- try_spawn (immédiat, tout-en-un) reste exposé pour l'interface remote et
 -- les tests.
 
+-- require doit se faire ICI : Factorio ne l'autorise QUE pendant le parsing de
+-- control.lua, jamais depuis un handler d'événement. composite ne require pas
+-- builder, donc aucun cycle.
+local composite = require("scripts.composite")
+
 local builder = {}
 
 local STOCK_TYPES = { "locomotive", "cargo-wagon", "fluid-wagon",
@@ -275,12 +280,20 @@ builder.compatible_fuel_categories = compatible_fuel_categories
 -- Carburants DÉBLOQUÉS (une recette enabled de la force les produit) dont la
 -- catégorie est acceptée par les locos, triés par pouvoir calorifique décroissant
 -- (meilleur rendement d'abord). `cats` = set renvoyé par compatible_fuel_categories.
--- Un item périssable ? get_spoil_ticks est une MÉTHODE (il n'existe pas
--- d'attribut spoil_ticks) et renvoie 0 — pas nil — pour un item qui ne pourrit
--- pas : d'où la comparaison explicite, un simple test de véracité exclurait tout.
+-- Un item périssable ? get_spoil_ticks est une MÉTHODE (il n'existe AUCUN attribut
+-- spoil_ticks runtime : la qualité module la durée via spoil_ticks_multiplier) et
+-- renvoie 0 — pas nil — pour un item qui ne pourrit pas : d'où la comparaison
+-- explicite, un simple test de véracité exclurait tout.
+--
+-- La QUALITÉ est OBLIGATOIRE malgré une signature documentée `quality?` : appelée
+-- sans argument, la méthode lève « Invalid QualityID: expected LuaQualityPrototype
+-- or string. » — le pcall avalait l'erreur, is_perishable renvoyait donc false pour
+-- TOUT, et les périssables (jellynut, œufs de biter/pentapode) restaient proposés.
+-- On interroge en qualité normale : le spoil est une propriété de l'item, la qualité
+-- ne fait que moduler la durée (spoil_ticks_multiplier), jamais l'existence du spoil.
 local function is_perishable(item_proto)
-  if not (item_proto and item_proto.get_spoil_ticks) then return false end
-  local ok, ticks = pcall(item_proto.get_spoil_ticks, item_proto)
+  if not item_proto then return false end
+  local ok, ticks = pcall(function() return item_proto:get_spoil_ticks(NORMAL) end)
   return ok and type(ticks) == "number" and ticks > 0
 end
 builder.is_perishable = is_perishable
@@ -313,6 +326,79 @@ local function unlocked_fuels(force, cats)
   return out
 end
 builder.unlocked_fuels = unlocked_fuels
+
+-- ---------------------------------------------------------------------------
+-- Préférence de carburant du joueur (state.fuel_pref)
+-- ---------------------------------------------------------------------------
+-- L'auto-sélection « meilleur carburant débloqué » ne suffit pas : avec des mods
+-- la liste est longue et contient des carburants indésirables, et le joueur peut
+-- vouloir brûler de la qualité (carb. solide légendaire, sinon rare, sinon
+-- normal). state.fuel_pref = set de clés composites (item, qualité) ACCEPTÉES,
+-- ou nil = tout accepté en qualité normale (comportement d'avant 1.1.0, donc
+-- valeur des saves migrées et des fonderies neuves).
+--
+-- L'ordre de préférence n'est PAS stocké : il se déduit (choix retenu en 1.1.0),
+-- carburants par fuel_value décroissant, et pour un même carburant les qualités
+-- de la meilleure à la moins bonne (prototypes.quality[q].level).
+local function quality_levels()
+  local out = {}
+  for name, q in pairs(prototypes.quality) do
+    -- On écarte la seule qualité « quality-unknown » du moteur (elle donnait une
+    -- colonne « Unknown » parasite), PAR SON NOM et non via `hidden` : la qualité
+    -- NORMALE est elle aussi hidden=true dans base (« hidden in the base game, to not
+    -- confuse by its existence in the selection gui »), et filtrer sur `hidden` vidait
+    -- donc toute la liste quand le mod Quality est désactivé — plus aucune case à
+    -- cocher. Le mod Quality ne dé-cache pas normal, il ajoute seulement les autres.
+    -- `level` ne permettrait pas de distinguer unknown (0, comme normal).
+    if name ~= "quality-unknown" then
+      out[#out + 1] = { name = name, level = q.level or 0 }
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.level ~= b.level then return a.level > b.level end
+    return a.name < b.name
+  end)
+  return out
+end
+builder.quality_levels = quality_levels
+
+-- Catégories brûlables par UNE LOCOMOTIVE QUELCONQUE du jeu. Sert à peupler la
+-- fenêtre de réglage : elle est persistante et ne doit pas dépendre du train en
+-- file (state.work peut être vide, et la préférence vaut pour les suivants).
+function builder.all_loco_fuel_categories()
+  local cats = {}
+  for _, proto in pairs(prototypes.get_entity_filtered({
+      { filter = "type", type = "locomotive" } })) do
+    local burner = proto.burner_prototype
+    if burner and burner.fuel_categories then
+      for cat in pairs(burner.fuel_categories) do cats[cat] = true end
+    end
+  end
+  return cats
+end
+
+-- Le couple (item, qualité) est-il accepté ? pref nil → seule la normale l'est.
+local function fuel_allowed(pref, name, quality)
+  if not pref then return quality == NORMAL end
+  return pref[qkey(name, quality)] == true
+end
+builder.fuel_allowed = fuel_allowed
+
+-- Couples (carburant, qualité) candidats, DANS L'ORDRE DE PRÉFÉRENCE : carburant
+-- par fuel_value décroissant, puis qualité décroissante. Filtré par fuel_pref.
+local function preferred_fuels(force, cats, pref)
+  local qualities = quality_levels()
+  local out = {}
+  for _, c in ipairs(unlocked_fuels(force, cats)) do
+    for _, q in ipairs(qualities) do
+      if fuel_allowed(pref, c.name, q.name) then
+        out[#out + 1] = { name = c.name, quality = q.name, fuel_value = c.fuel_value }
+      end
+    end
+  end
+  return out
+end
+builder.preferred_fuels = preferred_fuels
 
 -- Nombre de slots de carburant d'une loco (0 si pas de burner). La qualité est
 -- passée car un mod peut faire varier la taille d'inventaire avec elle : sans
@@ -377,23 +463,21 @@ function builder.compute_need(template, generic)
   return need
 end
 
--- Choisit le meilleur carburant débloqué compatible PRÉSENT en réserve en
--- quantité suffisante pour remplir toutes les locos à plein. Retourne
--- item_name, capacity (quantité pour le plein) ou nil si aucun ne convient.
--- `candidates` peut être fourni (déjà trié) pour éviter de recalculer.
+-- Choisit le carburant à brûler : premier couple (carburant, qualité) ACCEPTÉ par
+-- la préférence du joueur, dans l'ordre de préférence, présent en réserve en
+-- quantité suffisante pour le plein de toutes les locos. Retourne
+-- fuel_key (clé composite), capacity ou nil si aucun ne convient.
 local function pick_fuel(state, fuel_need)
   local inv = shared_inventory(state)
   if not inv then return nil end
   local force = state.entity and state.entity.valid and state.entity.force
   if not force then return nil end
-  local candidates = unlocked_fuels(force, fuel_need.categories)
-  for _, c in ipairs(candidates) do  -- meilleur fuel_value d'abord
+  for _, c in ipairs(preferred_fuels(force, fuel_need.categories, state.fuel_pref)) do
     local cap = loco_fuel_capacity(fuel_need.stock, c.name)
-    -- Carburant volontairement limité à la qualité NORMALE (choix générique non
-    -- encore ouvert à la qualité) : compter toutes qualités confondues ferait
-    -- consommer du carburant de qualité pour un plein ordinaire.
-    if cap > 0 and inv.get_item_count({ name = c.name, quality = NORMAL }) >= cap then
-      return c.name, cap
+    -- Le comptage porte sur le couple EXACT : additionner les qualités ferait
+    -- consommer du carburant de qualité pour satisfaire un besoin de normal.
+    if cap > 0 and inv.get_item_count({ name = c.name, quality = c.quality }) >= cap then
+      return qkey(c.name, c.quality), cap
     end
   end
   return nil
@@ -401,21 +485,22 @@ end
 builder.pick_fuel = pick_fuel
 
 -- Détail des carburants candidats pour l'affichage / le circuit : pour chaque
--- carburant débloqué compatible, son plein (Σ slots×stack) et ce que la réserve
--- en a. Trié par fuel_value décroissant. {} si pas de besoin carburant.
+-- couple (carburant, qualité) accepté, son plein (Σ slots×stack) et ce que la
+-- réserve en a. Dans l'ordre de préférence. {} si pas de besoin carburant.
 function builder.fuel_candidates(state, need)
   if not (need and need.fuel) then return {} end
   local inv = shared_inventory(state)
   local force = state.entity and state.entity.valid and state.entity.force
   if not force then return {} end
   local out = {}
-  for _, c in ipairs(unlocked_fuels(force, need.fuel.categories)) do
+  for _, c in ipairs(preferred_fuels(force, need.fuel.categories, state.fuel_pref)) do
     local full = loco_fuel_capacity(need.fuel.stock, c.name)
     if full > 0 then
       out[#out + 1] = {
         name = c.name,
+        quality = c.quality,
         need = full,
-        have = inv and inv.get_item_count({ name = c.name, quality = NORMAL }) or 0,
+        have = inv and inv.get_item_count({ name = c.name, quality = c.quality }) or 0,
       }
     end
   end
@@ -425,8 +510,11 @@ end
 -- Ce qui manque dans la réserve. Retourne :
 --   miss       : map item -> quantité manquante (composants)
 --   caption    : chaîne rich-text prête à afficher ("" si rien ne manque)
---   fuel_item  : carburant retenu pour le plein (nil si pas de besoin carburant
---                OU aucun carburant compatible débloqué dispo en quantité suffisante)
+--   fuel_item  : CLÉ COMPOSITE (item, qualité) du carburant retenu pour le plein
+--                (nil si pas de besoin carburant OU aucun couple accepté dispo en
+--                quantité suffisante). Une save d'avant 1.1.0 peut en porter un nom
+--                nu : qsplit le lit en qualité normale, ce qui est bien ce qui avait
+--                été prélevé à l'époque.
 --   fuel_short : true si un carburant EST requis mais aucun candidat ne convient
 -- Deux lignes dans la caption : composants, puis carburant (si manquant).
 function builder.missing(state, need)
@@ -450,12 +538,14 @@ function builder.missing(state, need)
     fuel_item = pick_fuel(state, need.fuel)
     if not fuel_item then
       fuel_short = true
-      -- Besoin d'un carburant, aucun candidat dispo en réserve : liste des
-      -- carburants compatibles débloqués (rich-text) pour guider le joueur.
+      -- Besoin d'un carburant, aucun candidat dispo en réserve : liste des couples
+      -- ACCEPTÉS (rich-text) pour guider le joueur — c'est ce qu'il doit fournir,
+      -- pas la liste complète des carburants du jeu.
       local force = state.entity and state.entity.valid and state.entity.force
-      local cands = force and unlocked_fuels(force, need.fuel.categories) or {}
+      local cands = force
+        and preferred_fuels(force, need.fuel.categories, state.fuel_pref) or {}
       local icons = {}
-      for _, c in ipairs(cands) do icons[#icons + 1] = "[item=" .. c.name .. "]" end
+      for _, c in ipairs(cands) do icons[#icons + 1] = qtag(c.name, c.quality) end
       fuel_caption = (#icons > 0) and table.concat(icons, " / ") or "?"
     end
   end
@@ -474,9 +564,10 @@ function builder.consume(state, need, fuel_item)
     inv.remove({ name = name, quality = quality, count = n })
   end
   if fuel_item and need.fuel then
-    local cap = loco_fuel_capacity(need.fuel.stock, fuel_item)
+    local fname, fquality = qsplit(fuel_item)
+    local cap = loco_fuel_capacity(need.fuel.stock, fname)
     if cap > 0 then
-      inv.remove({ name = fuel_item, quality = NORMAL, count = cap })
+      inv.remove({ name = fname, quality = fquality, count = cap })
     end
   end
 end
@@ -494,9 +585,10 @@ function builder.refund(state, need, fuel_item)
   local to_refund = {}
   for key, n in pairs(items or {}) do to_refund[key] = n end
   if fuel_item and need.fuel then
-    local cap = loco_fuel_capacity(need.fuel.stock, fuel_item)
+    local fname, fquality = qsplit(fuel_item)
+    local cap = loco_fuel_capacity(need.fuel.stock, fname)
     if cap > 0 then
-      local k = qkey(fuel_item, NORMAL)
+      local k = qkey(fname, fquality)
       to_refund[k] = (to_refund[k] or 0) + cap
     end
   end
@@ -796,19 +888,23 @@ function builder.spawn(state, template, params, fuel_item, generic)
       if fi then
         if fuel_item then
           -- Plein avec le carburant retenu (déjà payé, on ne retouche pas la réserve).
-          local stack = prototypes.item[fuel_item] and prototypes.item[fuel_item].stack_size or 0
+          local fname, fquality = qsplit(fuel_item)
+          local stack = prototypes.item[fname] and prototypes.item[fname].stack_size or 0
           local slots = #fi
           if stack > 0 and slots > 0 then
-            fi.insert({ name = fuel_item, quality = NORMAL, count = stack * slots })
+            fi.insert({ name = fname, quality = fquality, count = stack * slots })
           end
         elseif inv then
-          -- Repli : premier carburant compatible dispo en réserve, une pile.
+          -- Repli : premier carburant compatible dispo en réserve, une pile. Il
+          -- reste soumis à la préférence du joueur — sans ce filtre, une fonderie
+          -- réglée sur un seul carburant brûlerait quand même le reste de la réserve.
           local bp = v.prototype.burner_prototype
           if bp then
             for _, it in pairs(inv.get_contents()) do
               local ip = prototypes.item[it.name]
               if ip and ip.fuel_category and bp.fuel_categories[ip.fuel_category]
-                 and not is_perishable(ip) then
+                 and not is_perishable(ip)
+                 and fuel_allowed(state.fuel_pref, it.name, quality_of(it)) then
                 local count = math.min(it.count, ip.stack_size)
                 -- insert ET remove sur le MÊME couple : sans la qualité, le
                 -- moteur pourrait retirer une autre pile que celle insérée.
@@ -918,49 +1014,18 @@ function builder.spawn(state, template, params, fuel_item, generic)
   return departed and "spawn-ok-departed" or "spawn-ok-manual"
 end
 
--- Met à jour les signaux du connecteur circuit selon les cases cochées :
--- contenu du stock OU composants manquants, selon state.emit_mode
--- ("stock" ou "request"). Émis sur rouge ET vert identiquement (le moteur
--- ne sépare pas les fils). Pour ne rien émettre : ne pas brancher de câble.
-function builder.update_circuit(state)
-  local comb = state.combinator
-  if not (comb and comb.valid) then return end
-  local cb = comb.get_or_create_control_behavior()
+-- Écrit une map (clé composite -> quantité) dans les filtres d'un émetteur.
+local function emit(entity, acc)
+  if not (entity and entity.valid) then return end
+  local cb = entity.get_or_create_control_behavior()
   if not cb then return end
   local section = cb.get_section(1) or cb.add_section()
   if not section then return end
-
-  local mode = state.emit_mode or "stock"
-
-  local acc = {}  -- clé composite (name, quality) -> quantité cumulée
-  if mode == "stock" then
-    local inv = shared_inventory(state)
-    if inv then
-      for _, it in pairs(inv.get_contents()) do
-        qadd(acc, it.name, it.quality, it.count)
-      end
-    end
-  end
-  if mode == "request" then
-    -- Composants manquants du travail EN ATTENTE uniquement. Un travail déjà
-    -- en construction (phase building/ready) a déjà consommé ses composants
-    -- dans la réserve → ne PAS les redemander (sinon on réclame le contenu
-    -- d'un train déjà en cours).
-    if state.work and state.work.phase == "waiting" and state.work.need then
-      local miss = builder.missing(state, state.work.need)
-      for key, n in pairs(miss) do acc[key] = (acc[key] or 0) + n end
-      -- Carburant : on demande le PLEIN pour CHAQUE carburant candidat, pour
-      -- qu'au moins un arrive par la logistique. Dès qu'un carburant satisfait le
-      -- plein (have >= need), la prod part et ce bloc n'est plus atteint. On
-      -- n'ajoute la demande que pour les carburants pas encore au plein.
-      for _, f in ipairs(builder.fuel_candidates(state, state.work.need)) do
-        if f.have < f.need then
-          qadd(acc, f.name, NORMAL, f.need - f.have)
-        end
-      end
-    end
-  end
-
+  -- Une section INACTIVE garde ses filtres mais n'émet rien. On force l'activation :
+  -- l'entité étant invisible, le joueur n'aurait aucun moyen de la réactiver.
+  -- (`is_on` n'existe PAS sur LuaConstantCombinatorControlBehavior — et indexer un
+  -- membre absent d'un LuaObject LÈVE une erreur au lieu de rendre nil.)
+  if section.active == false then section.active = true end
   local filters = {}
   for key, count in pairs(acc) do
     if count ~= 0 then
@@ -972,6 +1037,79 @@ function builder.update_circuit(state)
     end
   end
   section.filters = filters
+end
+
+-- Met à jour les signaux du circuit. Les DEUX informations sont émises en
+-- permanence, chacune sur son fil du poteau :
+--   fil ROUGE  -> contenu de la réserve (ce qu'on A)
+--   fil VERT   -> composants manquants  (ce qu'on VEUT)
+-- Le joueur branche le fil qui l'intéresse, ou les deux. Plus de mode à choisir.
+--
+-- Deux émetteurs distincts sont nécessaires : un combinateur diffuse la même valeur
+-- sur ses deux fils, et rien ne permet de restreindre une section à un fil (voir
+-- composite.ensure_circuit). Ils sont invisibles et reliés au poteau par le mod.
+function builder.update_circuit(state)
+  -- Volet STOCK : tout le contenu de la réserve.
+  local stock = {}
+  local inv = shared_inventory(state)
+  if inv then
+    for _, it in pairs(inv.get_contents()) do
+      qadd(stock, it.name, it.quality, it.count)
+    end
+  end
+
+  -- Volet DEMANDES : composants manquants du travail EN ATTENTE uniquement. Un
+  -- travail déjà en construction (phase building/ready) a consommé ses composants
+  -- dans la réserve → ne PAS les redemander (sinon on réclame le contenu d'un train
+  -- déjà en cours).
+  local req = {}
+  if state.work and state.work.phase == "waiting" and state.work.need then
+    local miss = builder.missing(state, state.work.need)
+    for key, n in pairs(miss) do req[key] = (req[key] or 0) + n end
+    -- Carburant : on demande le PLEIN pour CHAQUE carburant candidat, pour qu'au
+    -- moins un arrive par la logistique. Dès qu'un carburant satisfait le plein
+    -- (have >= need), la prod part et ce bloc n'est plus atteint.
+    for _, f in ipairs(builder.fuel_candidates(state, state.work.need)) do
+      if f.have < f.need then
+        qadd(req, f.name, f.quality, f.need - f.have)
+      end
+    end
+  end
+
+  -- Un volet ÉTEINT est vidé : son lien au poteau est déjà coupé (ensure_circuit), mais
+  -- laisser d'anciens filtres en place rendrait le diagnostic trompeur et ferait
+  -- ressortir des signaux périmés si le volet est rallumé avant le tick suivant.
+  local cfg_stock = state.emit_stock or {}
+  local cfg_req   = state.emit_req or {}
+  emit(state.combinator, cfg_stock.on and stock or {})
+  emit(state.combinator_req, cfg_req.on and req or {})
+
+  -- Auto-réparation du câblage interne. ensure_circuit ne tourne qu'à la pose et à la
+  -- migration : une fonderie migrée par une version antérieure à ce câblage resterait
+  -- MUETTE pour toujours (filtres écrits, mais aucune connexion — c'est ce qu'a montré
+  -- /tf-debug). On ne répare QUE si un lien est attendu par les réglages et manque
+  -- vraiment : sinon, un volet volontairement décoché relancerait ensure_circuit à
+  -- chaque tick. Test bon marché : get_wire_connector(_, false) ne crée rien.
+  local expect = {
+    { state.combinator,     cfg_stock },
+    { state.combinator_req, cfg_req },
+  }
+  for _, x in ipairs(expect) do
+    local ent, cfg = x[1], x[2]
+    if ent and ent.valid and cfg.on then
+      for colour, wire in pairs({
+          red   = defines.wire_connector_id.circuit_red,
+          green = defines.wire_connector_id.circuit_green }) do
+        if cfg[colour] then
+          local conn = ent.get_wire_connector(wire, false)
+          if not conn or conn.connection_count == 0 then
+            composite.ensure_circuit(state)
+            return
+          end
+        end
+      end
+    end
+  end
 end
 
 -- Construction immédiate tout-en-un (interface remote / tests) : vérifie les

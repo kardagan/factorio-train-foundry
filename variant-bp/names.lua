@@ -3,7 +3,7 @@
 -- save 0.6.x reste valide. Le code commun lit UNIQUEMENT ces constantes.
 return {
   source      = "bp",
-  version     = "1.1.0",                  -- semver publié (mod désormais Factorio 2.1 uniquement)
+  version     = "1.2.0",                  -- semver publié (mod désormais Factorio 2.1 uniquement)
   mod         = "train-foundry",          -- nom du mod (chemin __<mod>__/graphics)
   building    = "train-foundry",          -- entité-bâtiment (INCHANGÉ)
   rail        = "tf-rail",
@@ -11,7 +11,12 @@ return {
   rail_ext    = "tf-rail-ext",             -- rail hors bâtiment : sélectionnable, non-minable
   input       = "tf-input",
   signal      = "tf-signal",
+  -- Émetteur circuit du STOCK. Nom historique conservé : les saves en contiennent
+  -- déjà un, et il devient invisible (relié au fil rouge du poteau) au lieu d'être
+  -- le point d'accroche du joueur — voir pole/combinator_req.
   combinator  = "tf-combinator",
+  combinator_req = "tf-combinator-req",     -- émetteur des DEMANDES (fil vert du poteau)
+  pole        = "tf-pole",                   -- poteau : seul point d'accroche câble + alim.
   wall        = "tf-wall",                  -- enceinte de murs du bâtiment
   gate        = "tf-gate",                  -- portes aux sorties des voies
   blocker     = "tf-blocker",               -- collision invisible bande basse (perso bloqué)

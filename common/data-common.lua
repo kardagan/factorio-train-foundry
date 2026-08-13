@@ -53,6 +53,60 @@ styles["tf_slot_missing"] = {
     tint = { 255, 25, 25, 255 } } },
 }
 
+-- Rangées du tableau des carburants acceptés (fenêtre « Accepted fuels ») : sans
+-- séparation visuelle, une grille de cases à cocher ne se lit pas — l'œil perd la
+-- ligne. Le zébrage est fait ici, avec un fond de teinte unie par rangée alternée.
+--
+-- `bordered_table` (et `bordered_frame`) ne portent leur quadrillage que par leur
+-- champ `border`, dont le rendu s'est avéré invisible dans cette fenêtre quelle que
+-- soit la géométrie essayée — y compris avec odd_row_graphical_set et la structure du
+-- moniteur de Smart Train Combinator, où le même style fonctionne. Une teinte unie ne
+-- dépend ni d'un atlas ni d'un border : c'est la solution déterministe.
+-- Le `tint` MULTIPLIE la texture d'origine, il ne la remplace pas : la tuile {0,0} de
+-- l'atlas gui étant déjà sombre, une teinte de gris moyen donnait un fond quasi noir.
+-- On part donc de white-square.png (un carré BLANC uni de 10×10), que la teinte ramène
+-- exactement à la couleur voulue — le zébrage reste alors discret et lisible.
+local function row_style(name, tint)
+  styles[name] = {
+    type = "frame_style",
+    parent = "frame",
+    graphical_set = {
+      base = { filename = "__core__/graphics/white-square.png",
+               width = 10, height = 10, tint = tint },
+    },
+    -- 4 px et non 2 : la rangée d'en-tête porte des pastilles de qualité de 16 px,
+    -- rognées en haut avec un padding trop serré.
+    top_padding = 4,
+    bottom_padding = 4,
+    left_padding = 6,
+    -- Symétrique : le padding DROIT n'a aucun effet visible ici (la rangée se
+    -- dimensionne sur son contenu, il tombe donc hors du cadre). La marge à droite de
+    -- la dernière colonne est obtenue en élargissant la colonne des noms, côté GUI.
+    right_padding = 6,
+  }
+end
+row_style("tf_row_even", { 0.28, 0.29, 0.32, 1 })
+row_style("tf_row_odd",  { 0.35, 0.37, 0.40, 1 })
+row_style("tf_row_head", { 0.45, 0.47, 0.50, 1 })
+
+-- Bandeau de titre des blocs de la fenêtre Configuration. bordered_frame ne dessine
+-- qu'une bordure (graphical_set vide) et laisse le titre sur le fond du panneau : on
+-- peint donc la bande soi-même, même technique que le zébrage ci-dessus (teinte unie
+-- sur white-square, indépendante de tout atlas).
+styles["tf_block_head"] = {
+  type = "frame_style",
+  parent = "frame",
+  graphical_set = {
+    base = { filename = "__core__/graphics/white-square.png",
+             width = 10, height = 10, tint = { 0.16, 0.17, 0.19, 1 } },
+  },
+  top_padding = 3,
+  bottom_padding = 3,
+  left_padding = 6,
+  right_padding = 6,
+  horizontally_stretchable = "on",
+}
+
 -- ============================================================================
 -- Entités cachées (enfants runtime — pas d'item, pas de recette)
 -- ============================================================================
@@ -154,18 +208,66 @@ local signal = table.deepcopy(data.raw["rail-signal"]["rail-signal"])
 signal.name = SIGNAL
 hide(signal)
 
--- Connecteur circuit : un VRAI constant-combinator (visible, point d'accroche câble).
-local combinator = table.deepcopy(
-  data.raw["constant-combinator"]["constant-combinator"])
-combinator.name = COMBINATOR
-combinator.minable = nil
-combinator.next_upgrade = nil
-combinator.fast_replaceable_group = nil
-combinator.flags = { "not-blueprintable", "not-deconstructable",
-                     "not-upgradable", "no-copy-paste", "player-creation",
-                     "hide-alt-info" }
-combinator.hidden_in_factoriopedia = true
-combinator.selection_priority = 100
+-- Émetteurs circuit : DEUX constant-combinators INVISIBLES. Un combinateur diffuse
+-- forcément la même valeur sur ses deux fils (aucun réglage de fil : le champ 2.1
+-- input_networks/output_networks vaut nil sur les combinateurs, et LuaLogisticSection
+-- n'a pas de champ de fil) — d'où deux entités, une par information :
+--   COMBINATOR      -> le STOCK,    relié au fil ROUGE du poteau
+--   COMBINATOR_REQ  -> les DEMANDES, reliées au fil VERT du poteau
+-- Le joueur ne les voit ni ne les câble jamais : il branche sur le POTEAU, et le mod
+-- fait la liaison par script (get_wire_connector/connect_to). Le piège « une entité
+-- invisible n'est pas câblable » ne s'applique donc pas ici.
+-- Sprite VIDE réutilisable : hide() ne masque que la map et la factoriopedia, pas le
+-- RENDU au sol — il faut donc écraser explicitement sprites/activity_led.
+local EMPTY_SPRITE = {
+  filename = "__core__/graphics/empty.png", width = 1, height = 1,
+}
+
+local function make_emitter(name)
+  local c = table.deepcopy(
+    data.raw["constant-combinator"]["constant-combinator"])
+  c.name = name
+  c.minable = nil
+  c.next_upgrade = nil
+  c.fast_replaceable_group = nil
+  c.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
+              "no-copy-paste", "player-creation", "hide-alt-info" }
+  c.hidden = true
+  c.hidden_in_factoriopedia = true
+  -- Non sélectionnable : le poteau est le seul point d'interaction du joueur.
+  c.selectable_in_game = false
+  -- PAS de collision_mask vide ici : un masque vide désactive la détection de
+  -- collision, et une entité sans collision n'est plus une cible de circuit fiable
+  -- (piège déjà rencontré sur ce mod avec l'outil fil et les bras). La collision
+  -- d'origine du combinateur est donc conservée.
+  -- sprites = EMPTY_SPRITE et non nil : nil peut laisser le rendu hérité du clone.
+  c.sprites = EMPTY_SPRITE
+  c.activity_led_sprites = EMPTY_SPRITE
+  -- Les FILS de ces émetteurs ne doivent pas être dessinés : l'entité étant invisible,
+  -- le câble interne vers le poteau semblait sortir du vide (constaté en jeu). Le fil
+  -- reste bien actif, seul son rendu est supprimé — celui du poteau, lui, s'affiche
+  -- normalement pour les câbles du joueur.
+  c.draw_circuit_wires = false
+  return c
+end
+local combinator     = make_emitter(COMBINATOR)
+local combinator_req = make_emitter(names.combinator_req)
+
+-- Poteau : SEUL point d'accroche visible. Il porte les trois fils (connection_points
+-- déclare copper/red/green sur tous les poteaux), donc le joueur y branche son
+-- circuit — rouge pour lire le stock, vert pour les demandes — ET son électricité.
+local pole = table.deepcopy(
+  data.raw["electric-pole"]["medium-electric-pole"])
+pole.name = names.pole
+pole.minable = nil
+pole.next_upgrade = nil
+pole.fast_replaceable_group = nil
+pole.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
+               "no-copy-paste", "player-creation" }
+pole.hidden_in_factoriopedia = true
+-- Au-dessus du bâtiment dans la pile de sélection, comme la réserve : sinon le
+-- footprint 40×22 capte le clic et le poteau devient impossible à câbler.
+pole.selection_priority = 100
 
 -- Enceinte : clone du mur de pierre vanilla, posé au pourtour du bâtiment.
 -- hide() le rend non-minable/non-sélectionnable ; il conserve sa collision
@@ -234,9 +336,6 @@ local block_combi = table.deepcopy(
   data.raw["constant-combinator"]["constant-combinator"])
 block_combi.name = BLOCK_COMBI
 hide(block_combi)
-local EMPTY_SPRITE = {
-  filename = "__core__/graphics/empty.png", width = 1, height = 1,
-}
 block_combi.sprites = EMPTY_SPRITE
 block_combi.activity_led_sprites = EMPTY_SPRITE
 block_combi.draw_circuit_wires = false
@@ -355,7 +454,8 @@ data:extend({
   { type = "recipe-category", name = names.dummy_cat },
 
   main, rail, rail_over, rail_ext, recycle_stop, block_signal, block_combi,
-  input, signal, combinator, wall, gate, blocker, deco_top, preview_sprite,
+  input, signal, combinator, combinator_req, pole, wall, gate, blocker, deco_top,
+  preview_sprite,
   roof_sprite,
 
   -- Vue d'ensemble : raccourci + touche perso ouvrant la fonderie de la surface.

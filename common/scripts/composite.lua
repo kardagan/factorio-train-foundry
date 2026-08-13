@@ -40,7 +40,12 @@ local DECO_TOP   = names.deco_top   -- bande déco haut (entité, ordre de dessi
 -- les 2 voies occupent Y≈0..+2 (recyclage) et Y≈+4..+6 (assemblage), donc on
 -- libère cette bande. Les signaux, eux, restent près des voies qu'ils gouvernent.
 local INPUT_OFFSET      = { -19.5, -5.5 }  -- coffre de fer (réserve, 1×2 vertical)
-local COMBINATOR_OFFSET = { -19.5, -1.5 }  -- connecteur circuit (descendu de 2)
+local COMBINATOR_OFFSET = { -19.5, -1.5 }  -- poteau : point d'accroche câble + alim.
+-- Émetteurs INVISIBLES, superposés au poteau : jamais câblés à la main (le mod les
+-- relie aux fils rouge/vert du poteau), donc leur position n'a pas besoin d'être
+-- atteignable. Décalés d'un poil pour ne pas partager la tuile exacte du poteau.
+local EMIT_STOCK_OFFSET = { -20.5, -1.5 }
+local EMIT_REQ_OFFSET   = { -20.5, -0.5 }
 local BPCHEST_OFFSET    = { -19.5, -8.5 }  -- coffre à blueprints (monté de 1)
 
 -- Les rails du jeu vivent sur les coordonnées IMPAIRES, alors que le
@@ -307,12 +312,18 @@ function composite.build(entity)
     bpchest = nil,     -- coffre à blueprints sur le parvis
     signal = nil,
     signal_east = nil, -- signal de sortie est (créé seulement si exit_right)
-    combinator = nil,  -- connecteur circuit sur le parvis
+    -- Grappe circuit (voir ensure_circuit) : le poteau est le seul objet visible et
+    -- câblable, les deux émetteurs sont invisibles et reliés à ses fils par le mod.
+    pole = nil,            -- poteau : accroche du circuit + alimentation
+    combinator = nil,      -- émetteur du STOCK
+    combinator_req = nil,  -- émetteur des DEMANDES
+    -- Volets d'émission : { on, red, green }. Par défaut le stock sur les deux fils
+    -- (comportement historique), les demandes éteintes — un joueur qui les veut les
+    -- coche, plutôt que de recevoir des signaux qu'il n'a pas demandés.
+    emit_stock = { on = true,  red = true, green = true },
+    emit_req   = { on = false, red = true, green = true },
     templates = {},  -- milestone 2 : templates de blueprints
     queue = {},      -- milestone 3 : file de construction
-    -- Mode d'émission circuit : "stock" ou "request" (par défaut le stock ;
-    -- pour ne rien émettre, ne pas brancher de câble).
-    emit_mode = "stock",
     -- Côtés de sortie de la voie d'ASSEMBLAGE (Y=RAIL_Y). Gauche ouverte par
     -- défaut, droite opt-in. Au moins une des deux reste ouverte.
     exit_left = true,
@@ -350,8 +361,7 @@ function composite.build(entity)
   composite.ensure_walls(state)
 
   state.input = place(entity, INPUT, INPUT_OFFSET, defines.direction.north)
-  state.combinator = place(entity, COMBINATOR, COMBINATOR_OFFSET,
-    defines.direction.north)
+  composite.ensure_circuit(state)
   if names.has_bpchest then
     state.bpchest = place(entity, BPCHEST, BPCHEST_OFFSET, defines.direction.north)
     composite.set_bpchest_filters(state)
@@ -713,15 +723,154 @@ function composite.open_west(state)
 end
 
 -- Connecteur circuit : (re)crée-le pour les fonderies d'avant cette version.
-function composite.ensure_combinator(state)
-  if state.combinator and state.combinator.valid then return end
+-- Grappe circuit : le POTEAU (seul objet visible/câblable, sert aussi de point
+-- d'alimentation) et les DEUX émetteurs invisibles qu'il relaie — stock sur le fil
+-- rouge, demandes sur le vert. Idempotent, et fait la migration des fonderies
+-- d'avant cette version : le tf-combinator y était VISIBLE à l'emplacement qu'occupe
+-- désormais le poteau, on le déplace donc vers sa position d'émetteur.
+--
+-- Un seul combinateur ne pourrait pas séparer les deux informations : il diffuse la
+-- même valeur sur ses deux fils, LuaLogisticSection n'a aucun champ de fil, et le
+-- réglage 2.1 input_networks/output_networks vaut nil sur les combinateurs (il n'existe
+-- que sur les entités à connecteur unique : coffres, assembleuses, tuyaux…).
+function composite.ensure_circuit(state)
   local e = state.entity
   if not (e and e.valid) then return end
-  local pos = { e.position.x + COMBINATOR_OFFSET[1],
-                e.position.y + COMBINATOR_OFFSET[2] }
-  state.combinator = e.surface.find_entities_filtered({
-    name = COMBINATOR, position = pos, radius = 1 })[1]
-    or place(e, COMBINATOR, COMBINATOR_OFFSET, defines.direction.north)
+
+  local function at(offset, name)
+    local pos = { e.position.x + offset[1], e.position.y + offset[2] }
+    return e.surface.find_entities_filtered({
+      name = name, position = pos, radius = 1 })[1]
+  end
+
+  -- Le poteau prend la place de l'ancien combinateur visible.
+  if not (state.pole and state.pole.valid) then
+    state.pole = at(COMBINATOR_OFFSET, names.pole)
+      or place(e, names.pole, COMBINATOR_OFFSET, defines.direction.north)
+  end
+  local pole = state.pole
+  if not (pole and pole.valid) then return end
+
+  -- Émetteur du stock. Sur une save d'avant le poteau, le tf-combinator existe DÉJÀ
+  -- (state.combinator est valide) mais il est à l'ancienne position, celle que le
+  -- poteau occupe maintenant : le test doit donc porter sur sa POSITION, pas sur son
+  -- absence — sinon la migration est sautée et son câble reste accroché au sol.
+  if not (state.combinator and state.combinator.valid) then
+    state.combinator = at(EMIT_STOCK_OFFSET, COMBINATOR)
+      or place(e, COMBINATOR, EMIT_STOCK_OFFSET, defines.direction.north)
+  end
+  local want_x = e.position.x + EMIT_STOCK_OFFSET[1]
+  local want_y = e.position.y + EMIT_STOCK_OFFSET[2]
+  local comb = state.combinator
+  if comb and comb.valid
+     and (math.abs(comb.position.x - want_x) > 0.01
+          or math.abs(comb.position.y - want_y) > 0.01) then
+    -- Ses câbles POSÉS PAR LE JOUEUR passent au poteau AVANT le déplacement :
+    -- l'émetteur est invisible et non sélectionnable, donc un câble resté dessus
+    -- serait impossible à retirer (piège constaté en jeu).
+    composite.move_player_wires(comb, pole)
+    comb.teleport({ want_x, want_y })
+  end
+
+  if not (state.combinator_req and state.combinator_req.valid) then
+    state.combinator_req = at(EMIT_REQ_OFFSET, names.combinator_req)
+      or place(e, names.combinator_req, EMIT_REQ_OFFSET, defines.direction.north)
+  end
+
+  -- Filet de sécurité : un émetteur DÉJÀ à sa place peut encore porter un câble du
+  -- joueur (fonderie migrée par une version intermédiaire qui déplaçait l'entité
+  -- sans transférer ses fils). On rapatrie donc au poteau, à chaque passage, tout
+  -- câble joueur trouvé sur un émetteur — invisible, il serait sinon irrécupérable.
+  composite.move_player_wires(state.combinator, pole)
+  composite.move_player_wires(state.combinator_req, pole)
+
+  -- Liaison des émetteurs au poteau, selon les cases du panneau Configuration : un
+  -- volet (stock / demandes) peut sortir sur le rouge, le vert, les deux, ou aucun.
+  -- Un fil relie deux connecteurs de MÊME couleur, donc « émettre sur les deux fils »
+  -- = deux liens (rouge↔rouge et vert↔vert) depuis le même émetteur — il diffuse la
+  -- même valeur sur toute sa paire de connecteurs, ce qui rend l'opération légitime.
+  --
+  -- Le connecteur du combinateur CONSTANT est la paire circuit_red/circuit_green, PAS
+  -- combinator_output_* : son prototype n'a ni input_connection_points ni
+  -- output_connection_points (contrairement au decider/arithmetic, qui ont deux côtés
+  -- physiques). Viser un connecteur inexistant faisait échouer la liaison SANS erreur.
+  local WIRES = {
+    red   = defines.wire_connector_id.circuit_red,
+    green = defines.wire_connector_id.circuit_green,
+  }
+  local volets = {
+    { state.combinator,     state.emit_stock },
+    { state.combinator_req, state.emit_req },
+  }
+  for _, v in ipairs(volets) do
+    local emitter, cfg = v[1], v[2] or {}
+    if emitter and emitter.valid then
+      for colour, wire in pairs(WIRES) do
+        local from = emitter.get_wire_connector(wire, true)
+        local to = pole.get_wire_connector(wire, true)
+        if from and to then
+          local want = cfg.on and cfg[colour]
+          if want then
+            -- reach_check=false : les deux entités sont posées par le mod, la
+            -- distance est maîtrisée et on ne dépend pas de la portée du prototype.
+            from.connect_to(to, false)
+          else
+            -- Décoché : on COUPE le lien. Sans ça, décocher un fil ne changerait rien
+            -- et le signal continuerait de sortir.
+            from.disconnect_from(to)
+          end
+        end
+      end
+    end
+  end
+end
+
+-- Déplace vers `dest` tous les câbles de circuit branchés sur `src`, SAUF le lien
+-- interne qui va déjà vers `dest`. Sert à ne jamais laisser un câble accroché à une
+-- entité invisible — il serait alors impossible à retirer, le joueur ne pouvant
+-- pas la sélectionner (piège constaté en jeu : fil pendouillant vers le sol).
+function composite.move_player_wires(src, dest)
+  if not (src and src.valid and dest and dest.valid) then return end
+  for _, wire in pairs({ defines.wire_connector_id.circuit_red,
+                         defines.wire_connector_id.circuit_green,
+                         defines.wire_connector_id.combinator_output_red,
+                         defines.wire_connector_id.combinator_output_green,
+                         defines.wire_connector_id.combinator_input_red,
+                         defines.wire_connector_id.combinator_input_green }) do
+    local from = src.get_wire_connector(wire, false)
+    if from and from.connection_count > 0 then
+      -- Le fil du poteau est ROUGE ou VERT selon la couleur d'origine, quel que
+      -- soit le connecteur (entrée/sortie) du combinateur d'où il partait.
+      local is_red = (wire == defines.wire_connector_id.circuit_red)
+        or (wire == defines.wire_connector_id.combinator_output_red)
+        or (wire == defines.wire_connector_id.combinator_input_red)
+      local to = dest.get_wire_connector(
+        is_red and defines.wire_connector_id.circuit_red
+                or defines.wire_connector_id.circuit_green, true)
+      if to then
+        -- Copie d'abord la liste : disconnect_from mute `connections` en cours d'itération.
+        local targets = {}
+        for _, c in pairs(from.connections) do
+          -- Le lien INTERNE émetteur -> poteau est posé en origin=player (voir
+          -- ensure_circuit) : on le reconnaît à sa cible et on ne le touche pas,
+          -- sinon on le débrancherait pour le rebrancher sur le poteau lui-même.
+          local tgt_owner = c.target and c.target.owner
+          if not (tgt_owner and tgt_owner.valid and tgt_owner == dest) then
+            targets[#targets + 1] = c.target
+          end
+        end
+        for _, target in ipairs(targets) do
+          from.disconnect_from(target)
+          to.connect_to(target, false)
+        end
+      end
+    end
+  end
+end
+
+-- Compat : l'ancien nom appelait la création du seul combinateur.
+function composite.ensure_combinator(state)
+  composite.ensure_circuit(state)
 end
 
 -- Coffre de réserve : (re)crée-le pour les fonderies d'avant cette version.
@@ -1199,6 +1348,12 @@ function composite.destroy(state)
 
   if state.combinator and state.combinator.valid then
     state.combinator.destroy()
+  end
+  if state.combinator_req and state.combinator_req.valid then
+    state.combinator_req.destroy()
+  end
+  if state.pole and state.pole.valid then
+    state.pole.destroy()
   end
   -- Legacy : ancien tableau de 4 combinators.
   for _, c in ipairs(state.combinators or {}) do

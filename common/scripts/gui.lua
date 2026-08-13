@@ -34,10 +34,42 @@ local WINDOW_BODY_HEIGHT = 785
 -- source de vérité, sinon la fenêtre déportée se replace mal après un resize).
 local LEFT_WIDTH  = 420
 local RIGHT_WIDTH = 448
+-- Nombre de slots carburant par rangée dans le panneau « en cours ». Un slot fait
+-- 40 px + 4 px d'espacement ; on retire ~32 px de marges du cadre à RIGHT_WIDTH.
+local FUEL_COLS = math.floor((RIGHT_WIDTH - 32) / 44)
 -- Fenêtre FLOTTANTE de gestion du coffre à blueprints.
 local BP_WINDOW = P .. "bp-window"
 -- Fenêtres déportées (circuit) et dialogue paramètres : top-level → préfixées.
 local CIRCUIT_WINDOW = P .. "circuit-window"
+-- Fenêtre autonome des carburants acceptés (grille carburants × qualités).
+local FUEL_WINDOW = P .. "fuel-window"
+-- Largeur du tableau des carburants : colonne des noms + une colonne par qualité.
+-- Calculée sur le nombre RÉEL de qualités (un mod peut en ajouter), sinon le tableau
+-- déborderait de son conteneur.
+-- La colonne des noms garde une largeur MINIMALE mais s'étire : sans le mod Quality il
+-- n'y a qu'une colonne de cases, et une largeur figée à 190 px laissait la fenêtre trop
+-- étroite pour l'afficher.
+local FUEL_NAME_COL = 190
+-- 58 et non 52 : la colonne de la qualité NORMALE porte un bouton TEXTE (« Normal »)
+-- là où les autres ont une pastille de 24 px, et il débordait de sa cellule. Le bouton
+-- est en plus borné à la largeur de la colonne (voir refresh_fuel_pref).
+local FUEL_QUAL_COL = 58
+-- Largeur plancher de la fenêtre : en dessous, la phrase d'explication se replie sur
+-- trop de lignes et comprime le tableau.
+local FUEL_MIN_BODY = 300
+-- Padding gauche+droite d'une rangée (styles tf_row_*, 6+6) + gouttière de la barre de
+-- scroll verticale : sans cette marge la dernière colonne de qualité était coupée.
+local FUEL_ROW_PAD = 12 + 14
+-- Supplément de padding DROIT du style de rangée (tf_row_*, 16 à droite contre 6 à
+-- gauche) : à compter dans la largeur, sinon la dernière colonne est rognée. C'est lui
+-- qui fait respirer la dernière colonne, une right_margin sur la cellule restant sans
+-- effet.
+local FUEL_TAIL_PAD = 10
+local function fuel_table_width(n_qualities)
+  return math.max(FUEL_MIN_BODY,
+                  FUEL_NAME_COL + n_qualities * FUEL_QUAL_COL
+                  + FUEL_ROW_PAD + FUEL_TAIL_PAD)
+end
 local PARAMS_WINDOW = P .. "params"
 
 local RICH_SPRITE = {
@@ -67,24 +99,14 @@ function gui.close(player)
   if p then p.destroy() end
   local c = player.gui.screen[CIRCUIT_WINDOW]
   if c then c.destroy() end
+  local f = player.gui.screen[FUEL_WINDOW]
+  if f then f.destroy() end
 end
 
 local function body_of(player)
   local w = player.gui.screen[WINDOW]
   if not w then return nil end
   return w["tf-body"]
-end
-
--- Applique l'exclusivité des radios d'émission (le moteur ne le fait pas
--- pour des radiobuttons indépendants) : coche celui du mode, décoche l'autre.
-function gui.set_emit_mode(player, mode)
-  local w = player.gui.screen[CIRCUIT_WINDOW]
-  local inner = w and w.valid and w["tf-circuit-inner"]
-  if not inner then return end
-  for _, name in ipairs({ "stock", "request" }) do
-    local rb = inner["tf-emit-" .. name]
-    if rb and rb.valid then rb.state = (name == mode) end
-  end
 end
 
 -- L'unit_number de la fonderie liée à la fenêtre ouverte de ce joueur.
@@ -109,14 +131,45 @@ local TILE_PAD = 10
 -- mis en cache ; nil pour la qualité normale, qui ne s'affiche pas.
 local QUALITY_BADGE = 13
 local quality_sprite_cache = {}
-local function quality_sprite(quality)
-  if not quality or quality == "normal" then return nil end
+
+-- Sprite d'une qualité, ou nil s'il n'existe pas. La NORMALE en a un dès que le mod
+-- Quality est chargé (base n'en fournit pas) : on ne l'exclut donc pas ici, ce sont les
+-- appelants qui décident. Chemin VALIDÉ (un sprite invalide ne plante qu'à l'AFFICHAGE,
+-- pas au chargement) et mis en cache.
+local function quality_icon(quality)
+  if not quality then return nil end
   local hit = quality_sprite_cache[quality]
   if hit ~= nil then return hit or nil end
   local path = "quality/" .. quality
   local ok = helpers.is_valid_sprite_path(path) and path or false
   quality_sprite_cache[quality] = ok
   return ok or nil
+end
+
+-- Badge posé sur le coin bas-gauche d'une icône de tuile : nil pour la NORMALE, dont
+-- l'absence de badge est voulue (une tuile de qualité normale reste identique à ce
+-- qu'elle était avant le support de la qualité).
+local function quality_sprite(quality)
+  if quality == "normal" then return nil end
+  return quality_icon(quality)
+end
+
+-- Un style de mod n'existe qu'après un passage du DATA STAGE : après une mise à
+-- jour, une partie simplement RECHARGÉE (sans relancer le jeu) tourne encore avec
+-- les anciens styles, et add() LÈVE sur un style inconnu ("Unknown style ..."),
+-- donc un crash non récupérable. On sonde une fois par style et on retombe sur un
+-- style de base. Le résultat n'est pas mis en cache : il change au relancement.
+-- `el_type` doit être le type d'élément réellement visé : un style ne s'applique
+-- qu'au type auquel il correspond (un table_style sur un frame échouerait aussi).
+local function style_or(parent, el_type, wanted, fallback)
+  local ok, probe = pcall(function()
+    return parent.add({ type = el_type, style = wanted })
+  end)
+  if ok and probe and probe.valid then
+    probe.destroy()
+    return wanted
+  end
+  return fallback
 end
 
 local TILE_ICONS = 5   -- largeur FIXE en icônes (loco + wagon + 2 chiffres + storage)
@@ -678,20 +731,36 @@ function gui.refresh_work(player, state)
     local flabel = flow.add({ type = "label", caption = { "tf-gui.fuel-title" } })
     flabel.style.font = "default-small-semibold"
     flabel.style.top_margin = 4
-    local frow = flow.add({ type = "flow", direction = "horizontal" })
+    -- Une TABLE dans un SCROLL, pas un flow : depuis que le joueur peut accepter
+    -- plusieurs qualités par carburant, les candidats se comptent en dizaines et une
+    -- rangée unique débordait de la colonne (slots hors cadre). Le scroll s'étire sur
+    -- toute la hauteur libre du panneau et prend le relais au-delà.
+    local fscroll = flow.add({
+      type = "scroll-pane",
+      horizontal_scroll_policy = "never",
+      vertical_scroll_policy = "auto",
+    })
+    fscroll.style.minimal_height = 62
+    fscroll.style.vertically_stretchable = true
+    fscroll.style.horizontally_stretchable = true
+    local frow = fscroll.add({ type = "table", column_count = FUEL_COLS })
     frow.style.horizontal_spacing = 4
+    frow.style.vertical_spacing = 2
     for _, f in ipairs(fuel_cands) do
       local ok = f.have >= f.need
       local col = frow.add({ type = "flow", direction = "vertical" })
       col.style.vertical_align = "center"
       col.style.horizontal_align = "center"
-      col.add({
+      local fbtn = col.add({
         type = "sprite-button",
         style = ok and "tf_slot_ok" or "tf_slot_missing",
         sprite = "item/" .. f.name,
+        quality = f.quality,
         tooltip = prototypes.item[f.name] and prototypes.item[f.name].localised_name or f.name,
         tags = { tf_ipedia = f.name },  -- clic → Factoriopedia
       })
+      fbtn.elem_tooltip = { type = "item-with-quality", name = f.name,
+                            quality = f.quality }
       local ratio = col.add({
         type = "label",
         caption = math.min(f.have, f.need) .. "/" .. f.need,
@@ -700,6 +769,16 @@ function gui.refresh_work(player, state)
       ratio.style.font_color = ok and { 0.5, 1, 0.5 } or { 1, 0.4, 0.4 }
       ratio.style.top_margin = 1
     end
+  elseif work.phase == "waiting" and work.blocked == "fuel" then
+    -- Bloqué sur le carburant mais AUCUN candidat à afficher : le joueur a tout
+    -- décoché dans la liste des carburants acceptés. Sans ce message, le train
+    -- resterait en attente sans rien à l'écran pour l'expliquer.
+    local warn = flow.add({ type = "label", caption = { "tf-gui.fuel-none-allowed" } })
+    warn.style.font = "default-small-semibold"
+    warn.style.font_color = { 1, 0.4, 0.4 }
+    warn.style.top_margin = 4
+    warn.style.single_line = false
+    warn.style.maximal_width = RIGHT_WIDTH - 24
   end
 
   -- État sous les composants : attente de voie (les manques composants/carburant
@@ -913,12 +992,16 @@ function gui.open(player, state)
     caption = { "tf-gui.work-title" },
     style = "caption_label",
   })
+  -- « En cours » ABSORBE la hauteur restante de la colonne (file et réserve ont des
+  -- hauteurs fixes) : le reliquat va à la zone carburant, dont le nombre de slots
+  -- explose dès que plusieurs qualités sont acceptées. Minimum garanti pour la barre
+  -- + la rangée composants + une rangée de carburant.
+  wframe.style.vertically_stretchable = true
   local wflow = wframe.add({
     type = "flow", name = "tf-work", direction = "vertical",
   })
-  -- Hauteur fixe : de quoi contenir la barre + rangée composants + rangée de slots
-  -- carburant (« Fuel (any one) », avec ses ratios) sans tasser, taille stable.
-  wflow.style.height = 235
+  wflow.style.minimal_height = 235
+  wflow.style.vertically_stretchable = true
 
   local sframe = right.add({
     type = "frame",
@@ -1018,35 +1101,109 @@ function gui.toggle_circuit(player, state)
     style = "inside_shallow_frame_with_padding",
     direction = "vertical",
   })
-  inner.style.width = 240
+  -- 280 et non 240 : la ligne de titre d'un volet circuit porte le libellé PLUS trois
+  -- cases (activation + R + V), et le texte était tronqué à 240.
+  local CONFIG_WIDTH = 280
+  inner.style.width = CONFIG_WIDTH
 
-  inner.add({
-    type = "label",
-    caption = { "tf-gui.emit-title" },
-    style = "caption_label",
-  })
-  local mode = state.emit_mode or "stock"
-  for _, m in ipairs({ { "stock", "tf-gui.emit-stock" },
-                       { "request", "tf-gui.emit-request" } }) do
-    inner.add({
-      type = "radiobutton",
-      name = "tf-emit-" .. m[1],
-      caption = { m[2] },
-      state = (mode == m[1]),
-      tags = { tf_emit_mode = m[1] },
-    })
+  -- Le panneau est découpé en BLOCS encadrés, à la manière des panneaux vanilla 2.1
+  -- (« Input » / « Output ») : un cadre par sujet, titre en tête. En liste plate les
+  -- réglages se mélangeaient et on ne savait plus à quoi se rattachait chaque case.
+  -- bordered_frame ne dessine que par son champ `border` (graphical_set vide) : c'est
+  -- le style qui n'avait RIEN rendu dans la fenêtre des carburants. Si le cadre ne
+  -- ressort pas ici non plus, remplacer par "inside_shallow_frame_with_padding", qui
+  -- a un fond plein.
+  -- `block` renvoie DEUX conteneurs : la ligne de titre (où l'on peut poser des
+  -- widgets à droite du libellé, comme le « Input [x] R [x] G » vanilla) et le corps.
+  -- Le bandeau de titre est un frame TEINTÉ (tf_block_head) et non un simple flow :
+  -- bordered_frame ne peint pas le fond de son titre, la bande noire attendue
+  -- n'apparaissait donc pas. Repli sur un flow nu si le style manque (partie rechargée
+  -- sans relancer le jeu).
+  local HEADST = style_or(inner, "frame", "tf_block_head", nil)
+  local function block(title)
+    local f = inner.add({ type = "frame", style = "bordered_frame",
+                          direction = "vertical" })
+    f.style.horizontally_stretchable = true
+    f.style.bottom_margin = 4
+    f.style.padding = 0
+    -- Le bandeau teinté est un FRAME, mais horizontal_spacing/vertical_align ne
+    -- s'appliquent qu'à une table ou un flow (« Expected Table or Flow ... but was
+    -- Frame ») : on met donc un flow À L'INTÉRIEUR du frame et on l'aligne, lui.
+    local head
+    if HEADST then
+      local band = f.add({ type = "frame", style = HEADST, direction = "horizontal" })
+      -- L'ÉTIREMENT suffit à faire traverser la bande : une largeur calculée
+      -- (CONFIG_WIDTH moins la bordure) débordait du cadre, la bordure de
+      -- bordered_frame n'étant pas exactement celle que j'avais estimée.
+      band.style.horizontally_stretchable = true
+      head = band.add({ type = "flow", direction = "horizontal" })
+    else
+      head = f.add({ type = "flow", direction = "horizontal" })
+    end
+    head.style.vertical_align = "center"
+    head.style.horizontal_spacing = 4
+    head.style.horizontally_stretchable = true
+    if title then
+      head.add({ type = "label", caption = { title }, style = "caption_label" })
+      -- Un ESPACEUR pousse les widgets suivants à droite. Étirer le LABEL lui-même le
+      -- faisait compresser par les cases, d'où un titre tronqué (« Missing compo… »).
+      local spacer = head.add({ type = "empty-widget" })
+      spacer.style.horizontally_stretchable = true
+    end
+    -- Corps séparé : le titre est une bande pleine largeur, le contenu vient dessous
+    -- avec sa propre marge (le padding du cadre est mis à 0 pour que la bande touche
+    -- bien les bords).
+    local body = f.add({ type = "flow", direction = "vertical" })
+    body.style.padding = 6
+    body.style.horizontally_stretchable = true
+    return body, head
   end
 
-  -- Côtés de sortie du train : cases INDÉPENDANTES (gauche et/ou droite). Gauche
-  -- ouverte par défaut ; cocher droite pose la voie + le signal est.
-  inner.add({
-    type = "label",
-    caption = { "tf-gui.exit-title" },
-    style = "caption_label",
-  })
+  -- ---- Bloc CIRCUIT : UN seul bloc contenant les deux volets, une ligne chacun. Les
+  -- deux peuvent être actifs en même temps (c'est l'intérêt des deux fils) ; tout
+  -- décocher coupe le signal.
+  local circuit = block("tf-gui.emit-title")
+  for _, v in ipairs({
+    { "stock", "tf-gui.emit-stock", state.emit_stock },
+    { "req",   "tf-gui.emit-request", state.emit_req },
+  }) do
+    local key, cap, cfg = v[1], v[2], v[3] or {}
+    local row = circuit.add({ type = "flow", direction = "horizontal" })
+    row.style.vertical_align = "center"
+    row.style.horizontal_spacing = 4
+    row.style.horizontally_stretchable = true
+    -- La case d'activation PORTE le libellé du volet ; les cases de fil sont poussées
+    -- à droite par un espaceur (étirer le label le ferait compresser par les cases).
+    row.add({
+      type = "checkbox",
+      caption = { cap },
+      state = cfg.on and true or false,
+      tags = { tf_emit_on = key },
+    })
+    local spacer = row.add({ type = "empty-widget" })
+    spacer.style.horizontally_stretchable = true
+    -- Cases de fil GRISÉES et DÉCOCHÉES tant que le volet est éteint : une case cochée
+    -- mais grisée laissait croire que le fil émettait. À l'activation du volet elles
+    -- repartent décochées — le joueur choisit lui-même la couleur, on n'envoie jamais
+    -- de signaux sur un fil sans qu'il l'ait demandé.
+    for _, w in ipairs({ { "red", "tf-gui.wire-red" },
+                         { "green", "tf-gui.wire-green" } }) do
+      row.add({
+        type = "checkbox",
+        caption = { w[2] },
+        state = (cfg.on and cfg[w[1]]) and true or false,
+        enabled = cfg.on and true or false,
+        tags = { tf_emit_wire = key, tf_wire = w[1] },
+      })
+    end
+  end
+
+  -- ---- Bloc SORTIES : côtés de la voie d'assemblage. Cases indépendantes, les deux
+  -- peuvent être ouvertes ; on interdit seulement de fermer les DEUX (voir le handler).
+  local exits = block("tf-gui.exit-title")
   for _, s in ipairs({ { "left", "tf-gui.exit-left", state.exit_left },
                        { "right", "tf-gui.exit-right", state.exit_right } }) do
-    inner.add({
+    exits.add({
       type = "checkbox",
       name = "tf-exit-" .. s[1],
       caption = { s[2] },
@@ -1055,26 +1212,20 @@ function gui.toggle_circuit(player, state)
     })
   end
 
-  -- Voie de RECYCLAGE (optionnelle) : titre + case "Active" + ses côtés gauche/
-  -- droite, GRISÉS tant que la voie de recyclage n'est pas activée.
-  inner.add({
-    type = "label",
-    caption = { "tf-gui.deco-title" },
-    style = "caption_label",
-  })
-  inner.add({
+  -- ---- Bloc RECYCLAGE : la case d'activation vit sur la ligne de titre, ses côtés
+  -- en dessous. Côté d'entrée = RADIO (exclusif) : la voie est un CUL-DE-SAC, une seule
+  -- entrée (gauche OU droite). Le bout opposé est fermé (mur+gare) → le train y bute et
+  -- ne peut pas repartir. Grisés tant que la recyclage n'est pas active.
+  local deco, deco_head = block("tf-gui.deco-title")
+  deco_head.add({
     type = "checkbox",
     name = "tf-deco",
-    caption = { "tf-gui.deco-active" },
     state = state.deco and true or false,
     tags = { tf_deco = true },
   })
-  -- Côté d'entrée = RADIO (exclusif) : la voie de recyclage est un CUL-DE-SAC, une
-  -- seule entrée (gauche OU droite). Le bout opposé est fermé (mur+gare) → le train
-  -- y bute et ne peut pas repartir. Grisés tant que la recyclage n'est pas active.
   for _, s in ipairs({ { "left", "tf-gui.exit-left", state.deco_left },
                        { "right", "tf-gui.exit-right", state.deco_right } }) do
-    inner.add({
+    deco.add({
       type = "radiobutton",
       name = "tf-deco-" .. s[1],
       caption = { s[2] },
@@ -1084,14 +1235,23 @@ function gui.toggle_circuit(player, state)
     })
   end
 
+  -- ---- Bloc CARBURANT : la roue crantée (fenêtre des carburants acceptés) vit sur la
+  -- ligne de titre ; en variante BP seulement, le mode générique est en dessous.
+  local fuel, fuel_head = block("tf-gui.fuel-block-title")
+  local fbtn = fuel_head.add({
+    type = "sprite-button",
+    name = "tf-fuel-pref-open",
+    style = "tool_button",
+    sprite = "utility/preset",
+    tooltip = { "tf-gui.fuel-pref-tip" },
+  })
+  fbtn.style.size = 24
+
   -- Carburant générique — variante BP seulement (en STC c'est toujours le cas).
   -- Décoché (défaut) : le train utilise le carburant du blueprint (0.5.x). Coché :
   -- remplissage au meilleur carburant débloqué dispo + interruption Refuel.
   if names.has_bpchest then
-    inner.add({
-      type = "line", direction = "horizontal",
-    })
-    inner.add({
+    fuel.add({
       type = "checkbox",
       name = "tf-generic-fuel",
       caption = { "tf-gui.generic-fuel" },
@@ -1102,6 +1262,274 @@ function gui.toggle_circuit(player, state)
   end
 
   gui.reposition_circuit(player)
+end
+
+-- ---------------------------------------------------------------------------
+-- Fenêtre « Carburants acceptés »
+-- ---------------------------------------------------------------------------
+-- Fenêtre AUTONOME et centrée : la grille (N carburants × N qualités) ne tient
+-- pas dans la colonne de la fenêtre Configuration. Un couple coché = un
+-- carburant que la fonderie s'autorise à brûler ; l'ordre de préférence est
+-- déduit (fuel_value puis qualité décroissante) et n'est pas réglable ici.
+gui.FUEL_WINDOW = FUEL_WINDOW
+
+function gui.close_fuel(player)
+  local w = player.gui.screen[FUEL_WINDOW]
+  if w then w.destroy() end
+end
+
+-- L'unit_number porté par la fenêtre carburant elle-même. Elle est déplaçable et
+-- vit sa propre vie : ses clics ne doivent pas dépendre de la fenêtre principale.
+function gui.fuel_window_unit_number(player)
+  local w = player.gui.screen[FUEL_WINDOW]
+  if not (w and w.valid) then return nil end
+  return w.tags.unit_number
+end
+
+function gui.open_fuel(player, state)
+  local existing = player.gui.screen[FUEL_WINDOW]
+  if existing then
+    existing.destroy()
+    return
+  end
+
+  local frame = player.gui.screen.add({
+    type = "frame",
+    name = FUEL_WINDOW,
+    direction = "vertical",
+    tags = { unit_number = state.entity.unit_number },
+  })
+
+  local titlebar = frame.add({ type = "flow", direction = "horizontal" })
+  titlebar.drag_target = frame
+  titlebar.add({
+    type = "label",
+    caption = { "tf-gui.fuel-pref-title" },
+    style = "frame_title",
+    ignored_by_interaction = true,
+  })
+  local drag = titlebar.add({ type = "empty-widget",
+    style = "draggable_space_header" })
+  drag.style.horizontally_stretchable = true
+  drag.style.height = 24
+  drag.drag_target = frame
+  titlebar.add({
+    type = "sprite-button",
+    name = "tf-fuel-close",
+    style = "frame_action_button",
+    sprite = "utility/close",
+  })
+
+  -- Structure calquée sur le moniteur de Smart Train Combinator, dont le tableau se
+  -- rend correctement : frame à LARGEUR FIXE → inside_shallow_frame (padding 12) →
+  -- flow de contenu (minimal_width = largeur - 32) → table. Le tableau doit vivre
+  -- dans un conteneur de largeur connue, sinon son odd_row_graphical_set s'étire en
+  -- bande verticale au lieu de zébrer les lignes.
+  local body_w = fuel_table_width(#builder.quality_levels())
+  frame.style.width = body_w + 32
+
+  local inner = frame.add({
+    type = "frame",
+    name = "tf-fuel-inner",
+    style = "inside_shallow_frame",
+    direction = "vertical",
+  })
+  inner.style.padding = 12
+
+  local hint = inner.add({ type = "label", caption = { "tf-gui.fuel-pref-hint" } })
+  hint.style.single_line = false
+  hint.style.maximal_width = body_w
+  hint.style.bottom_margin = 6
+
+  local bar = inner.add({ type = "flow", direction = "horizontal" })
+  bar.style.vertical_align = "center"
+  bar.style.bottom_margin = 6
+  bar.style.horizontal_spacing = 4
+  -- Raccourcis : sans eux, cocher une qualité sur 15 carburants Space Age demanderait
+  -- 15 clics. Boutons NORMAUX et non `mini_button` : ce style est carré et réduisait
+  -- « All »/« None » à un « A »/« N » illisible.
+  for _, b in ipairs({
+    { "tf-fuel-pref-all",  "tf-gui.fuel-pref-all",  "tf-gui.fuel-pref-all-tip" },
+    { "tf-fuel-pref-none", "tf-gui.fuel-pref-none", "tf-gui.fuel-pref-none-tip" },
+  }) do
+    local btn = bar.add({
+      type = "button",
+      name = b[1],
+      caption = { b[2] },
+      tooltip = { b[3] },
+    })
+    btn.style.minimal_width = 0
+    btn.style.height = 26
+    btn.style.padding = { 0, 8 }
+  end
+
+  -- Le scroll ne sert que de garde-fou vertical (une quinzaine de carburants tient
+  -- sans lui, un mod peut en ajouter) : sa largeur est FIGÉE sur celle du contenu,
+  -- pour que le tableau reste dans un conteneur de largeur connue.
+  local scroll = inner.add({
+    type = "scroll-pane",
+    name = "tf-fuel-pref",
+    horizontal_scroll_policy = "never",
+    vertical_scroll_policy = "auto",
+  })
+  scroll.style.maximal_height = 640
+  scroll.style.width = body_w
+  gui.refresh_fuel_pref(scroll, state)
+
+  frame.force_auto_center()
+end
+
+-- (Re)peuple la grille des carburants. `scroll` = le scroll-pane tf-fuel-pref.
+function gui.refresh_fuel_pref(scroll, state)
+  if not (scroll and scroll.valid) then return end
+  scroll.clear()
+
+  local force = state.entity and state.entity.valid and state.entity.force
+  if not force then return end
+  local fuels = builder.unlocked_fuels(force, builder.all_loco_fuel_categories())
+  if #fuels == 0 then
+    scroll.add({ type = "label", caption = { "tf-gui.fuel-pref-empty" } })
+    return
+  end
+  local qualities = builder.quality_levels()
+  local pref = state.fuel_pref
+
+  -- Rendu du tableau : une RANGÉE = un frame à fond plein, teinte alternée, dans
+  -- lequel les cellules sont posées à largeur fixe. C'est le zébrage qui donne la
+  -- grille, pas une bordure : `bordered_table` et son odd_row_graphical_set n'ont
+  -- jamais rien dessiné ici, quelle que soit la géométrie, alors qu'une teinte unie
+  -- ne dépend d'aucun atlas. Les styles viennent du DATA STAGE, donc absents après un
+  -- simple rechargement de partie → style_or retombe sur "frame" (rangées sans
+  -- zébrage) plutôt que de faire lever add().
+  local HEAD = style_or(scroll, "frame", "tf_row_head", "frame")
+  local EVEN = style_or(scroll, "frame", "tf_row_even", "frame")
+  local ODD  = style_or(scroll, "frame", "tf_row_odd", "frame")
+
+  -- La colonne des NOMS prend la largeur restante (la fenêtre a un plancher, voir
+  -- fuel_table_width) : les colonnes de qualité gardent ainsi leur largeur fixe et
+  -- restent alignées sur leur en-tête, quel que soit le nombre de qualités.
+  local qual_w = FUEL_QUAL_COL
+  -- FUEL_TAIL_PAD n'est PAS retiré ici : en le laissant à la colonne des noms, les
+  -- colonnes de qualité se décalent d'autant vers la gauche et la dernière se décolle
+  -- du bord droit. Le right_padding du style de rangée, lui, tombe hors du cadre (la
+  -- rangée se dimensionne sur son contenu) — c'est le seul levier qui agit vraiment.
+  local name_w = fuel_table_width(#qualities) - FUEL_ROW_PAD
+                 - #qualities * qual_w
+
+  local holder = scroll.add({ type = "flow", direction = "vertical" })
+  holder.style.vertical_spacing = 1
+
+  -- Une cellule de qualité : largeur fixe, contenu centré. Utilisée par l'en-tête et
+  -- par chaque rangée, pour que les colonnes tombent exactement les unes sur les autres.
+  -- `h` (optionnel) impose une hauteur : l'en-tête s'en sert pour que la pastille de
+  -- qualité ne soit pas rognée par une cellule calée sur un contenu plus court.
+  -- La marge de droite vient du right_padding du STYLE de rangée (tf_row_*), pas d'une
+  -- marge posée ici : une right_margin sur la dernière cellule restait sans effet.
+  local function qual_cell(row, h)
+    local cell = row.add({ type = "flow", direction = "horizontal" })
+    cell.style.width = qual_w
+    if h then cell.style.height = h end
+    cell.style.horizontal_align = "center"
+    cell.style.vertical_align = "center"
+    return cell
+  end
+
+  -- En-tête : libellé de colonne + une pastille de qualité par colonne (nom en
+  -- tooltip). La qualité normale n'a pas de badge → son nom sert de repère.
+  local head = holder.add({ type = "frame", style = HEAD, direction = "horizontal" })
+  head.style.vertical_align = "center"
+  -- Hauteur MINIMALE explicite : sans elle la rangée se cale sur la hauteur du label et
+  -- les pastilles de qualité sont rognées en haut. 34 px = pastille de 16 + les 2×4 px
+  -- de padding de la rangée + une marge, 28 ne suffisait pas.
+  head.style.minimal_height = 34
+  local h0 = head.add({ type = "label", caption = { "tf-gui.fuel-pref-col-fuel" },
+                        style = "caption_label" })
+  h0.style.width = name_w
+  -- L'en-tête de qualité est CLIQUABLE : il bascule toute sa colonne, pendant de
+  -- l'icône de carburant qui bascule sa ligne. D'où un sprite-BUTTON (un `sprite` ne
+  -- reçoit pas les clics) et, pour la qualité normale qui n'a pas de badge, un bouton
+  -- portant son nom.
+  for _, q in ipairs(qualities) do
+    -- `quality-name.normal` n'est PAS défini dans base : c'est le mod Quality qui
+    -- l'apporte. Sans lui, localised_name affiche la clé brute. On passe donc par un
+    -- repli maison, avec la locale du jeu en premier choix quand elle existe.
+    local qname = (q.name == "normal")
+      and { "?", { "quality-name.normal" }, { "tf-gui.quality-normal" } }
+      or prototypes.quality[q.name].localised_name
+    local cell = qual_cell(head, 24)
+    -- quality_icon et non quality_sprite : ici on VEUT l'icône de la qualité normale
+    -- quand elle existe (le mod Quality la fournit), c'est plus lisible qu'un libellé
+    -- texte et ça aligne la colonne sur les autres. Sans le mod, repli sur le nom.
+    local pip_path = quality_icon(q.name)
+    if pip_path then
+      local pip = cell.add({
+        type = "sprite-button",
+        style = "frame_action_button",
+        sprite = pip_path,
+        tooltip = { "tf-gui.fuel-col-toggle", qname },
+        tags = { tf_fuel_col = q.name },
+      })
+      pip.style.size = 24
+    else
+      -- Style DISCRET (tool_button, qui porte du texte contrairement au
+      -- frame_action_button prévu pour une icône) : un bouton standard ressortait en
+      -- jaune vif au milieu de l'en-tête.
+      local btn = cell.add({
+        type = "button",
+        style = "tool_button",
+        caption = qname,
+        tooltip = { "tf-gui.fuel-col-toggle", qname },
+        tags = { tf_fuel_col = q.name },
+      })
+      btn.style.minimal_width = 0
+      -- Borné à la cellule : sans maximal_width le libellé pousse le bouton hors de sa
+      -- colonne et décale l'en-tête par rapport aux cases du dessous.
+      btn.style.maximal_width = qual_w - 4
+      btn.style.height = 24
+      btn.style.padding = { 0, 4 }
+      btn.style.font = "default-small-semibold"
+    end
+  end
+
+  for i, f in ipairs(fuels) do
+    local proto = prototypes.item[f.name]
+    local row = holder.add({
+      type = "frame",
+      style = (i % 2 == 0) and EVEN or ODD,
+      direction = "horizontal",
+    })
+    row.style.vertical_align = "center"
+
+    local name_cell = row.add({ type = "flow", direction = "horizontal" })
+    name_cell.style.width = name_w
+    name_cell.style.vertical_align = "center"
+    -- Clic sur l'icône = bascule TOUTE la ligne (plus utile ici que d'ouvrir la
+    -- Factoriopedia : un carburant se coche le plus souvent dans toutes ses qualités
+    -- d'un coup). Le nom reste lisible en tooltip.
+    local icon = name_cell.add({
+      type = "sprite-button",
+      style = "slot_button",
+      sprite = "item/" .. f.name,
+      tooltip = { "tf-gui.fuel-row-toggle" },
+      tags = { tf_fuel_row = f.name },
+    })
+    icon.style.size = 20
+    icon.style.right_margin = 6
+    name_cell.add({
+      type = "label",
+      caption = proto and proto.localised_name or f.name,
+    })
+
+    for qi, q in ipairs(qualities) do
+      local cb = qual_cell(row).add({
+        type = "checkbox",
+        state = builder.fuel_allowed(pref, f.name, q.name),
+        tags = { tf_fuel_pref = builder.qkey(f.name, q.name) },
+      })
+      cb.elem_tooltip = { type = "item-with-quality", name = f.name,
+                          quality = q.name }
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------

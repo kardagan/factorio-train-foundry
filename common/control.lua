@@ -47,6 +47,21 @@ local function fuel_is_generic(st)
   return st.generic_fuel and true or false
 end
 
+-- Préférence de carburant EXPLICITE équivalente au défaut implicite (fuel_pref
+-- nil = tous les carburants compatibles en qualité normale). Matérialisée à la
+-- première coche du joueur : sans ça, décocher un carburant sur une préférence
+-- nil serait sans effet (nil accepte déjà toutes les normales).
+local function default_fuel_pref(st)
+  local pref = {}
+  local force = st.entity and st.entity.valid and st.entity.force
+  if not force then return pref end
+  for _, f in ipairs(builder.unlocked_fuels(force,
+      builder.all_loco_fuel_categories())) do
+    pref[builder.qkey(f.name, "normal")] = true
+  end
+  return pref
+end
+
 -- ----------------------------------------------------------------------------
 -- Storage : init lazy idempotente, appelée en tête de chaque handler
 -- (convention défensive — les vieilles saves passent par là aussi).
@@ -134,10 +149,21 @@ local function migrate_all()
     st.rails = st.rails or {}
     -- Vieilles saves : toutes les fonderies étaient des maîtres autonomes.
     st.role = st.role or "master"
-    -- Migration de l'ancien couple de booléens vers emit_mode.
-    if st.emit_mode == nil then
-      st.emit_mode = st.emit_request and "request" or "stock"
-      st.emit_stock, st.emit_request = nil, nil
+    -- Circuit : l'ancien MODE unique (emit_mode = "stock" | "request", émis sur les
+    -- deux fils) devient deux volets indépendants, chacun avec son choix de fils.
+    --
+    -- La migration doit REPORTER le choix, jamais le réinitialiser : une fonderie
+    -- réglée sur "request" et branchée à un coffre demandeur émettrait sinon son STOCK
+    -- sur ce même fil — le coffre réclamerait ce qu'il possède déjà, en boucle.
+    -- On active donc le seul volet qui était choisi, sur les DEUX fils, ce qui
+    -- reproduit exactement le comportement d'avant (le mode unique sortait partout).
+    if st.emit_stock == nil or type(st.emit_stock) ~= "table" then
+      local was_request = (st.emit_mode == "request")
+        -- Ancêtres booléens d'avant emit_mode (st.emit_request).
+        or (st.emit_mode == nil and st.emit_request == true)
+      st.emit_stock = { on = not was_request, red = true, green = true }
+      st.emit_req   = { on = was_request,     red = true, green = true }
+      st.emit_mode, st.emit_request = nil, nil
     end
     -- Côtés de sortie (ajoutés avec la sortie est). Vieille save = gauche seule.
     if st.exit_left == nil then st.exit_left = true end
@@ -149,6 +175,9 @@ local function migrate_all()
     -- Carburant générique (0.7.x) : défaut false = comportement 0.5.x (respecte
     -- le carburant du blueprint), pour ne pas surprendre une save existante.
     if st.generic_fuel == nil then st.generic_fuel = false end
+    -- st.fuel_pref (1.1.0) volontairement LAISSÉ nil sur une save existante : nil
+    -- signifie « tout carburant compatible, qualité normale », exactement le
+    -- comportement d'avant le réglage. Il se matérialise à la 1re coche du joueur.
     -- Ancien champ chain_sprites = rendus LuaRendering (au-dessus des roues)
     -- d'anciennes versions de test. Purge-les, sinon ils resteraient affichés.
     if st.chain_sprites then
@@ -190,7 +219,12 @@ local function migrate_all()
       -- (réserve, connecteur circuit, coffre à blueprints) : mise à jour EN
       -- PLACE, sans que le joueur ait à miner puis reposer la fonderie.
       composite.ensure_input(st)
-      composite.ensure_combinator(st)
+      -- Grappe circuit : pose le poteau (nouveau point d'accroche), DÉPLACE l'ancien
+      -- tf-combinator visible vers sa position d'émetteur, ajoute l'émetteur des
+      -- demandes et (re)câble le tout. Un câble que le joueur avait branché sur
+      -- l'ancien combinateur SUIT l'entité déplacée : son réseau reste donc relié,
+      -- et il lira le stock (le rôle que garde cette entité).
+      composite.ensure_circuit(st)
       if names.has_bpchest then composite.ensure_bpchest(st) end
       -- Sol pavé (ajouté après) : posé si absent.
       if not (st.floor_saved and #st.floor_saved > 0) then
@@ -243,12 +277,15 @@ local function migrate_all()
     ref(st.signal)
     ref(st.signal_east)
     ref(st.combinator)
+    ref(st.combinator_req)
+    ref(st.pole)
     -- Legacy : anneau de quais + 4 combinators d'anciennes versions.
     for _, c in ipairs(st.inputs or {}) do ref(c) end
     for _, c in ipairs(st.combinators or {}) do ref(c) end
   end
   local child_names = { names.rail, names.rail_over, names.rail_ext, names.input,
-                        names.signal, names.combinator, names.wall, names.gate,
+                        names.signal, names.combinator, names.combinator_req,
+                        names.pole, names.wall, names.gate,
                         names.recycle_stop, names.block_signal, names.block_combi,
                         names.deco_top, names.blocker }
   if names.has_bpchest then child_names[#child_names + 1] = names.bpchest end
@@ -1083,17 +1120,65 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
   if not (el and el.valid and el.tags) then return end
   local player = game.get_player(event.player_index)
   if not player then return end
+  ensure_storage()
+
+  -- Carburants acceptés : une case par couple (carburant, qualité). Traité AVANT
+  -- la résolution ci-dessous : cette fenêtre est autonome (déplaçable, elle peut
+  -- rester ouverte sans la principale) et porte son propre unit_number.
+  if el.tags.tf_fuel_pref then
+    local fun = gui.fuel_window_unit_number(player)
+    local fst = fun and storage.foundries[fun]
+    if not (fst and fst.entity and fst.entity.valid) then return end
+    -- La préférence est un SET de clés composites ; nil signifiant « tout en
+    -- normal », la première modification doit la matérialiser explicitement,
+    -- sinon décocher un carburant serait sans effet (nil accepte déjà toutes les
+    -- normales).
+    if not fst.fuel_pref then
+      fst.fuel_pref = default_fuel_pref(fst)
+    end
+    fst.fuel_pref[el.tags.tf_fuel_pref] = el.state and true or nil
+    -- Un travail EN ATTENTE peut avoir retenu un carburant désormais refusé : son
+    -- besoin est recalculé au prochain tick. Un travail déjà en construction a
+    -- payé son carburant, on ne le retouche pas.
+    if fst.work and fst.work.phase == "waiting" then
+      fst.work.need = nil
+    end
+    builder.update_circuit(fst)
+    return
+  end
+
   local un = gui.window_unit_number(player)
   if not un then return end
-  ensure_storage()
   local st = storage.foundries[un]
   if not (st and st.entity and st.entity.valid) then return end
 
-  -- Mode d'émission circuit (radios exclusifs).
-  if el.tags.tf_emit_mode then
-    st.emit_mode = el.tags.tf_emit_mode
-    gui.set_emit_mode(player, st.emit_mode)
+  -- Circuit : case d'activation d'un volet (stock / demandes), ou choix d'un fil.
+  -- Dans les deux cas on recâble (ensure_circuit lit ces réglages) puis on réécrit
+  -- les signaux, et on rouvre la fenêtre pour rafraîchir l'état grisé des cases.
+  if el.tags.tf_emit_on or el.tags.tf_emit_wire then
+    local key = el.tags.tf_emit_on or el.tags.tf_emit_wire
+    local field = (key == "stock") and "emit_stock" or "emit_req"
+    st[field] = st[field] or { on = false, red = true, green = true }
+    if el.tags.tf_emit_on then
+      st[field].on = el.state and true or false
+      -- Activer un volet ne coche AUCUN fil : c'est au joueur de choisir lequel.
+      -- Auparavant on rétablissait le rouge (et une valeur mémorisée pouvait rallumer
+      -- le vert), donc cocher un volet balançait d'un coup tous les signaux sur les
+      -- deux couleurs — précisément ce qu'on ne veut pas faire dans son dos.
+      if st[field].on then
+        st[field].red, st[field].green = false, false
+      end
+    else
+      st[field][el.tags.tf_wire] = el.state and true or false
+    end
+    composite.ensure_circuit(st)
     builder.update_circuit(st)
+    -- Reconstruit le panneau : activer/désactiver un volet change l'état `enabled`
+    -- de ses deux cases de fil.
+    if gui.circuit_is_open(player) then
+      gui.toggle_circuit(player, st)   -- ferme
+      gui.toggle_circuit(player, st)   -- rouvre à jour
+    end
     return
   end
 
@@ -1169,6 +1254,49 @@ script.on_event(defines.events.on_gui_click, function(event)
   if not (el and el.valid) then return end
   local player = game.get_player(event.player_index)
   if not player then return end
+
+  -- Fenêtre « Carburants acceptés » : bascule d'une LIGNE (clic sur l'icône du
+  -- carburant) ou d'une COLONNE (clic sur l'en-tête de qualité). Dans les deux cas, si
+  -- au moins une case du groupe est cochée on décoche tout, sinon on coche tout.
+  if el.tags and (el.tags.tf_fuel_row or el.tags.tf_fuel_col) then
+    ensure_storage()
+    local un = gui.fuel_window_unit_number(player)
+    local st = un and storage.foundries[un]
+    if not (st and st.entity and st.entity.valid) then return end
+    if not st.fuel_pref then st.fuel_pref = default_fuel_pref(st) end
+
+    -- Liste des clés composites du groupe visé.
+    local keys = {}
+    if el.tags.tf_fuel_row then
+      for _, q in ipairs(builder.quality_levels()) do
+        keys[#keys + 1] = builder.qkey(el.tags.tf_fuel_row, q.name)
+      end
+    else
+      local quality = el.tags.tf_fuel_col
+      for _, f in ipairs(builder.unlocked_fuels(st.entity.force,
+          builder.all_loco_fuel_categories())) do
+        keys[#keys + 1] = builder.qkey(f.name, quality)
+      end
+    end
+
+    local any = false
+    for _, k in ipairs(keys) do
+      if st.fuel_pref[k] then
+        any = true
+        break
+      end
+    end
+    for _, k in ipairs(keys) do
+      st.fuel_pref[k] = (not any) or nil
+    end
+
+    if st.work and st.work.phase == "waiting" then st.work.need = nil end
+    builder.update_circuit(st)
+    local w = player.gui.screen[gui.FUEL_WINDOW]
+    local inner = w and w.valid and w["tf-fuel-inner"]
+    gui.refresh_fuel_pref(inner and inner["tf-fuel-pref"], st)
+    return
+  end
 
   -- Slot d'ingrédient/carburant : clic → Factoriopedia de l'item (le tooltip
   -- affiche déjà son nom). Protégé (API 2.1 ; item pouvant avoir disparu).
@@ -1246,6 +1374,48 @@ script.on_event(defines.events.on_gui_click, function(event)
   if el.name == "tf-circuit-close" then
     local w = player.gui.screen[gui.CIRCUIT_WINDOW]
     if w then w.destroy() end
+    return
+  end
+
+  -- Raccourcis de la liste des carburants. « Tout » = toutes les qualités de tous
+  -- les carburants (pas le défaut implicite, qui est normal seulement) ; « Aucun »
+  -- = set vide, la prod se bloquera sur le carburant jusqu'à un choix — assumé,
+  -- c'est le point de départ pour ne cocher que ce qu'on veut.
+  -- Fenêtre des carburants acceptés : ouverture depuis la fenêtre Configuration.
+  if el.name == "tf-fuel-pref-open" then
+    ensure_storage()
+    local un = gui.window_unit_number(player)
+    local st = un and storage.foundries[un]
+    if st and st.entity and st.entity.valid then
+      gui.open_fuel(player, st)
+    end
+    return
+  end
+  if el.name == "tf-fuel-close" then
+    gui.close_fuel(player)
+    return
+  end
+
+  if el.name == "tf-fuel-pref-all" or el.name == "tf-fuel-pref-none" then
+    ensure_storage()
+    local un = gui.fuel_window_unit_number(player)
+    local st = un and storage.foundries[un]
+    if not (st and st.entity and st.entity.valid) then return end
+    local pref = {}
+    if el.name == "tf-fuel-pref-all" then
+      for _, f in ipairs(builder.unlocked_fuels(st.entity.force,
+          builder.all_loco_fuel_categories())) do
+        for _, q in ipairs(builder.quality_levels()) do
+          pref[builder.qkey(f.name, q.name)] = true
+        end
+      end
+    end
+    st.fuel_pref = pref
+    if st.work and st.work.phase == "waiting" then st.work.need = nil end
+    builder.update_circuit(st)
+    local w = player.gui.screen[gui.FUEL_WINDOW]
+    local inner = w and w.valid and w["tf-fuel-inner"]
+    gui.refresh_fuel_pref(inner and inner["tf-fuel-pref"], st)
     return
   end
 
@@ -1480,5 +1650,55 @@ commands.add_command(names.mod .. "-debug", "État de la Train Foundry survolée
     stock,
     (st.combinator and st.combinator.valid) and "ok" or "MANQUANT",
     signal, #st.templates, #st.queue, w and w.phase or "-"))
+
+  -- Volet CIRCUIT : pour chaque émetteur, ce qu'il a dans sa section et ce à quoi
+  -- son connecteur de sortie est relié ; puis ce que le poteau voit sur chaque fil.
+  local function emit_report(label, ent, out_wire)
+    if not (ent and ent.valid) then
+      player.print("[tf-debug] " .. label .. " = MANQUANT")
+      return
+    end
+    local cb = ent.get_control_behavior()
+    local sec = cb and cb.get_section(1)
+    local nf = 0
+    if sec and sec.filters then nf = #sec.filters end
+    local conn = ent.get_wire_connector(out_wire, false)
+    local links = {}
+    if conn then
+      for _, c in pairs(conn.connections) do
+        local o = c.target and c.target.owner
+        links[#links + 1] = (o and o.valid and o.name or "?")
+          .. "/" .. tostring(c.origin)
+      end
+    end
+    player.print(string.format(
+      "[tf-debug] %s: pos=%.1f,%.1f filtres=%d sections=%s sorties=[%s]",
+      label, ent.position.x, ent.position.y, nf,
+      cb and tostring(cb.sections_count) or "nil",
+      table.concat(links, " ")))
+  end
+  -- Le combinateur CONSTANT n'a qu'une paire circuit_red/circuit_green (pas de
+  -- connecteurs entrée/sortie séparés comme le decider) : c'est là qu'il faut lire.
+  emit_report("emit-stock", st.combinator,
+    defines.wire_connector_id.circuit_red)
+  emit_report("emit-req", st.combinator_req,
+    defines.wire_connector_id.circuit_green)
+
+  if st.pole and st.pole.valid then
+    local parts = {}
+    for _, w in ipairs({ { "rouge", defines.wire_connector_id.circuit_red },
+                         { "vert", defines.wire_connector_id.circuit_green } }) do
+      local net = st.pole.get_circuit_network(w[2])
+      local n = 0
+      if net and net.signals then n = #net.signals end
+      local conn = st.pole.get_wire_connector(w[2], false)
+      parts[#parts + 1] = string.format("%s=%d signaux/%d câbles", w[1], n,
+        conn and conn.connection_count or 0)
+    end
+    player.print("[tf-debug] poteau: " .. table.concat(parts, "  "))
+  else
+    player.print("[tf-debug] poteau = MANQUANT")
+  end
 end)
+
 

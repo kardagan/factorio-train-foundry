@@ -3,7 +3,7 @@
 -- installé (coexistence « 1 de chaque par surface »). Pas de coffre à blueprints.
 return {
   source      = "stc",
-  version     = "1.1.0",                   -- semver publié (mod Factorio 2.1 uniquement)
+  version     = "1.2.0",                   -- semver publié (mod Factorio 2.1 uniquement)
   mod         = "train-foundry-stc",       -- nom du mod (chemin __<mod>__/graphics)
   building    = "tfstc-foundry",
   rail        = "tfstc-rail",
@@ -11,7 +11,9 @@ return {
   rail_ext    = "tfstc-rail-ext",           -- rail hors bâtiment : sélectionnable, non-minable
   input       = "tfstc-input",
   signal      = "tfstc-signal",
-  combinator  = "tfstc-combinator",
+  combinator  = "tfstc-combinator",          -- émetteur du STOCK (fil rouge du poteau)
+  combinator_req = "tfstc-combinator-req",   -- émetteur des DEMANDES (fil vert du poteau)
+  pole        = "tfstc-pole",                 -- poteau : seul point d'accroche câble + alim.
   wall        = "tfstc-wall",               -- enceinte de murs du bâtiment
   gate        = "tfstc-gate",               -- portes aux sorties des voies
   blocker     = "tfstc-blocker",            -- collision invisible bande basse (perso bloqué)
