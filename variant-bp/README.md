@@ -26,10 +26,13 @@ blueprint parameters included.
 - **Fuel**: by default the train uses the fuel from the blueprint. A **Generic fuel** option (in the
   Configuration window) instead fills every locomotive with the best unlocked compatible fuel
   available in the stock and adds a refuel interrupt. A blueprint with no fuel always uses this.
+  An **Accepted fuels** window (gear button in Configuration) decides what "best" may pick from, with
+  one checkbox per fuel and quality.
 - **Exit sides**: left (west) by default; a right (east) exit can be enabled in the window. The train
   picks the side its schedule reaches.
 - **Longer trains**: chain extensions against the east side — each adds room for 5 more vehicles.
-- **Circuit connector**: broadcast the stock contents or the missing components.
+- **Circuit connector**: an electric pole (power and/or circuit). Stock contents and missing
+  components are two independent outputs, each with its own wire choice (red, green, or both).
 - **Clear stuck train**: one click destroys and refunds a train that cannot leave.
 - **Remote control**: a shortcut-bar button (and Ctrl+Alt+F) opens the foundry from anywhere.
 - One foundry per planet. Vanilla, Space Age and Nullius compatible.

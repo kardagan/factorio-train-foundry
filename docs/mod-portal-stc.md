@@ -66,13 +66,25 @@ network.
 
 ### Fuel, handled for you
 
-You don't pick a fuel. The foundry fills every locomotive with the **best unlocked
-fuel** available in its stock, and only starts a build once one compatible fuel is
-present in a full load. The generated **refuel interrupt** covers every fuel the
-locomotive can burn (it tops up at 10% and leaves once full). A solar locomotive
-needs no fuel and gets no refuel interrupt. The window shows a fuel row, and the
-circuit "read requests" mode asks for every candidate fuel so at least one is
-delivered by your logistics.
+You never have to pick a fuel per train. The foundry fills every locomotive with
+the **best unlocked fuel** available in its stock, and only starts a build once one
+compatible fuel is present in a full load. The generated **refuel interrupt** covers
+every fuel the locomotive can burn (it tops up at 10% and leaves once full). A solar
+locomotive needs no fuel and gets no refuel interrupt. The window shows a fuel row,
+and the circuit's missing-components output asks for every candidate fuel so at
+least one is delivered by your logistics.
+
+You do decide what "best" may pick from. The gear button next to **Accepted fuels**
+opens a window listing every unlocked fuel a locomotive can burn, with one checkbox
+per quality — click a fuel's icon to toggle its whole row, or a quality header to
+toggle its whole column. Only ticked fuels are burned and requested, and among them
+the foundry takes the highest fuel value first, then the highest quality: tick solid
+fuel in legendary, rare and normal and it burns legendary while you have some, rare
+otherwise, normal as a last resort. Handy for keeping pentapod eggs and Gleba
+produce out of your locomotives, or for reserving rocket fuel for something else.
+Left untouched, every fuel is accepted in normal quality.
+
+![The Accepted fuels window](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/accepted-fuels.png)
 
 ### Left or right exit, longer trains, and more
 
@@ -82,14 +94,19 @@ delivered by your logistics.
 - **Longer trains.** Chain extensions against the east side — each module adds
   room for five more vehicles.
 
+![The Configuration window](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/stc-configuration.png)
+
 ![Chained foundries for longer trains](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/stc-extensions.png)
 
 - **Recycling track.** Tick it in the Configuration window to add a second,
   dead-end track with a **Train Recycle** stop: route a train onto it and the
   foundry destroys it and refunds its full cost (vehicles, fuel and cargo) into
   the stock. A one-way block signal keeps it from backing out.
-- **Circuit network.** Broadcast the stock contents or the components (and fuels)
-  still needed.
+- **Circuit network.** The connector is an electric pole — wire it for power, for
+  circuit, or both. The stock contents and the components (and fuels) still needed
+  are two independent outputs: enable either or both and pick the wire (red, green,
+  or both) each one goes out on, so you can read what you have and what you need at
+  the same time.
 - **Clear a stuck train.** If a built train cannot leave, one click destroys it
   and refunds its cost.
 - **Remote control.** A shortcut-bar button (or CTRL+ALT+F) opens the foundry

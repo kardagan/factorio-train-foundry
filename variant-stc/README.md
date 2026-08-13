@@ -28,10 +28,15 @@ sends them off onto your rail network on their own — no blueprint needed.
 - **Generic fuelling**: fills every locomotive with the best unlocked compatible fuel available in
   the stock; production waits until one such fuel is present in a full load. The refuel interrupt
   covers every fuel the locomotive can burn (trigger at 10% of full, refill to full). A solar
-  locomotive needs no fuel and gets no refuel interrupt. The window shows a fuel row; the circuit
-  "read requests" mode requests every candidate fuel so at least one is delivered.
-- **Exit sides** (left/right), **chainable extensions** for longer trains, **circuit connector**,
-  **clear stuck train** button, and Factoriopedia on component/fuel slots.
+  locomotive needs no fuel and gets no refuel interrupt. The window shows a fuel row; the circuit's
+  missing-components output requests every candidate fuel so at least one is delivered.
+- **Accepted fuels**: a window (gear button in Configuration) with one checkbox per fuel and quality
+  decides what the foundry may burn — click a fuel icon to toggle its row, a quality header for its
+  column. Among the ticked ones it takes the highest fuel value, then the highest quality.
+- **Circuit connector**: an electric pole (power and/or circuit). Stock contents and missing
+  components are two independent outputs, each with its own wire choice (red, green, or both).
+- **Exit sides** (left/right), **chainable extensions** for longer trains, **clear stuck train**
+  button, and Factoriopedia on component/fuel slots.
 - **Remote control**: a shortcut-bar button (and Ctrl+Alt+F) opens the foundry from anywhere.
 - One foundry per planet. Vanilla, Space Age and Nullius compatible.
 
