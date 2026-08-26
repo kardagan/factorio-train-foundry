@@ -323,6 +323,11 @@ function composite.build(entity)
     emit_stock = { on = true,  red = true, green = true },
     emit_req   = { on = false, red = true, green = true },
     templates = {},  -- milestone 2 : templates de blueprints
+    -- Templates CUSTOM : compositions dessinées par le joueur (variante STC ;
+    -- inerte en variante BP, où les compositions viennent des blueprints).
+    custom = {},
+    custom_next_id = 1,  -- id stable d'un custom, jamais réutilisé
+    stc_tab = "default", -- onglet de la liste : formes STC ou compositions custom
     queue = {},      -- milestone 3 : file de construction
     -- Côtés de sortie de la voie d'ASSEMBLAGE (Y=RAIL_Y). Gauche ouverte par
     -- défaut, droite opt-in. Au moins une des deux reste ouverte.

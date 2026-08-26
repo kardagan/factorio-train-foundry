@@ -64,6 +64,37 @@ network.
 
 ![The interface](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/stc-interface.png)
 
+### Or draw the train yourself
+
+The shapes read from your combinators come with a fixed composition: one head
+locomotive plus its wagons. When that isn't the train you want, switch the list to
+**Custom** and draw it.
+
+**+ New custom template** opens a composer that lays the train out as a row of
+slots, the way a chest lays out its inventory. The first slot is a train stop: it
+marks the **head** of the train, the direction it leaves in. Every slot after it
+takes a locomotive, a cargo wagon or a fluid wagon — click it to pick from a
+filtered list, or click it with the item in hand. The free slot at the end
+lengthens the train, up to the capacity of the foundry chain; emptying a slot
+shortens it.
+
+The button above a locomotive **turns it around**. That is what double-heading and
+a tail locomotive facing the other way are made of — a train that pulls in both
+directions, which the default shapes could never describe.
+
+The important part: **a custom train serves exactly the same stops.** Locomotives
+appear in no station name, so a double-header with four wagons produces the very
+same loading station, train group and interrupts as the default four-wagon shape.
+The composer shows the generated station name as you build, to compare it with
+your existing STC stops at a glance.
+
+Two rules keep that promise: every wagon must be the same type, and the same
+quality — a station name carries a single wagon icon and a single quality, so a
+mixed train could never match a stop. Locomotives are free: type, tier and quality
+as you like.
+
+![The composer](https://raw.githubusercontent.com/kardagan/factorio-train-foundry/main/docs/stc-composer.png)
+
 ### Fuel, handled for you
 
 You never have to pick a fuel per train. The foundry fills every locomotive with
