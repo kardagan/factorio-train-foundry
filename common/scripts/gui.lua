@@ -949,11 +949,33 @@ function gui.refresh_work(player, state)
     warn.style.maximal_width = RIGHT_WIDTH - 24
   end
 
-  -- État sous les composants : attente de voie (les manques composants/carburant
-  -- sont déjà lisibles sur les slots).
-  if (work.phase == "waiting" and not work.blocked)
+  -- État sous les composants (les manques composants/carburant sont déjà lisibles
+  -- sur les slots). Les DEUX conditions de départ — voie interne libre et bloc de
+  -- sortie ouvert — sont distinguées : elles se ressemblent à l'écran alors qu'on
+  -- les répare à des endroits opposés, et un signal de sortie rouge n'a rien
+  -- d'évident (le bloc court jusqu'au prochain signal du réseau du joueur, donc un
+  -- train qui passe LOIN de la fonderie la retient). L'attente sur la voie est
+  -- incluse ici : en phase « waiting » elle portait le drapeau blocked == "track"
+  -- et n'affichait alors AUCUN message.
+  if (work.phase == "waiting" and (not work.blocked or work.blocked == "track"))
     or work.phase == "ready" then
-    flow.add({ type = "label", caption = { "tf-gui.work-ready" } })
+    if not builder.track_free(state) then
+      flow.add({ type = "label", caption = { "tf-gui.work-track-busy" } })
+    elseif not builder.exit_open(state) then
+      flow.add({ type = "label", caption = { "tf-gui.work-exit-closed" } })
+      -- La cause la moins devinable mérite son mode d'emploi, en gris sous le
+      -- message : c'est le découpage en blocs qu'il faut corriger, pas la fonderie.
+      local hint = flow.add({
+        type = "label", caption = { "tf-gui.work-exit-closed-hint" } })
+      hint.style.font = "default-small"
+      hint.style.font_color = { 0.8, 0.8, 0.8 }
+      hint.style.single_line = false
+      hint.style.maximal_width = RIGHT_WIDTH - 24
+    else
+      -- Ni voie ni sortie : plus rien ne retient le train, il sort au prochain
+      -- tick de production.
+      flow.add({ type = "label", caption = { "tf-gui.work-ready" } })
+    end
   end
 end
 

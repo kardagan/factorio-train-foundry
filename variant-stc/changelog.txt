@@ -20,6 +20,11 @@ Date: 2026-08-26
       fuels they can burn, and the threshold is set on the thirstiest one. A composition of solar
       locomotives still gets no refuel interrupt.
   Changes:
+    - The "In progress" panel now says WHICH of the two departure conditions is holding the train:
+      "Internal track occupied" or "Exit signal closed" -- the latter with a note that the exit block
+      runs to the next signal on your network, so a train passing far from the foundry can hold it
+      back. Both used to read "Waiting for clear track", which sent you looking at the wrong end. A
+      build waiting on the internal track showed no message at all.
 ---------------------------------------------------------------------------------------------------
 Version: 1.2.0
 Date: 2026-08-12
