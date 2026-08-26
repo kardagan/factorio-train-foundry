@@ -34,4 +34,10 @@ return {
   dummy_cat   = "train-foundry-dummy",
   remote      = "train-foundry",          -- interface remote historique
   shortcut    = "tf-open-overview",
+  -- Prérequis de la TECHNO (inchangés) : la variante BP ne dépend d'aucun mod,
+  -- elle se branche directement sur les technos de base. Portés par names comme
+  -- ceux de la variante STC, pour que data-common n'ait pas à connaître la
+  -- variante.
+  tech_prereq         = { "advanced-combinators", "automated-rail-transportation" },
+  tech_prereq_nullius = { "nullius-computation", "nullius-traffic-control" },
 }

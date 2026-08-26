@@ -20,6 +20,12 @@ Date: 2026-08-26
       fuels they can burn, and the threshold is set on the thirstiest one. A composition of solar
       locomotives still gets no refuel interrupt.
   Changes:
+    - The foundry's technology now sits under Smart Train Combinator's own technology in the tech
+      tree, instead of next to it on the same base prerequisites. The mod cannot work without STC, so
+      the tree may as well say it. STC's own prerequisites (advanced combinators, automated rail
+      transportation) are inherited through it. If you had already researched the foundry without
+      researching Smart Train Combinator -- possible until now, both sat at the same level -- it
+      stays researched; only the tree drawing changes.
     - The "In progress" panel now says WHICH of the two departure conditions is holding the train:
       "Internal track occupied" or "Exit signal closed" -- the latter with a note that the exit block
       runs to the next signal on your network, so a train passing far from the foundry can hold it

@@ -450,6 +450,20 @@ local roof_sprite = {
   scale = 1, flags = { "no-crop" },
 }
 
+-- Prérequis de techno RÉELLEMENT présents. Un prérequis inconnu fait échouer le
+-- chargement du jeu : si la techno visée a disparu (le mod dont on dépend l'a
+-- renommée dans une version ultérieure), on retombe sur `fallback` plutôt que de
+-- planter au démarrage. Les technos des mods dont on dépend sont déjà chargées
+-- quand ce fichier tourne — une dépendance obligatoire passe avant nous.
+local function tech_prereq(wanted, fallback)
+  local out = {}
+  for _, name in ipairs(wanted or {}) do
+    if data.raw.technology[name] then out[#out + 1] = name end
+  end
+  if #out == 0 then return fallback end
+  return out
+end
+
 data:extend({
   { type = "recipe-category", name = names.dummy_cat },
 
@@ -508,7 +522,11 @@ data:extend({
     type = "technology",
     name = MAIN,
     icons = { { icon = GFX .. "tech.png", icon_size = 256 } },
-    prerequisites = { "advanced-combinators", "automated-rail-transportation" },
+    -- Prérequis portés par la VARIANTE (names.tech_prereq) : ils encodent la
+    -- place du bâtiment dans l'arbre, et celle de la variante STC est sous la
+    -- techno de Smart Train Combinator, dont elle dépend.
+    prerequisites = tech_prereq(names.tech_prereq,
+      { "advanced-combinators", "automated-rail-transportation" }),
     unit = {
       count = 100,
       ingredients = {
@@ -545,7 +563,11 @@ if mods["nullius"] then
   local tech = data.raw.technology[MAIN]
   tech.localised_name        = { "technology-name." .. MAIN }
   tech.localised_description = { "technology-description." .. MAIN }
-  tech.prerequisites = { "nullius-computation", "nullius-traffic-control" }
+  -- Même règle qu'en vanilla, avec les noms Nullius : la variante STC suit la
+  -- techno de Smart Train Combinator, que STC a renommée en nullius-* dans son
+  -- propre data stage (chargé avant le nôtre).
+  tech.prerequisites = tech_prereq(names.tech_prereq_nullius,
+    { "nullius-computation", "nullius-traffic-control" })
   tech.unit = {
     count = 30,
     ingredients = {
