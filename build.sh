@@ -16,6 +16,11 @@
 #
 # Version : le champ `version` de names.lua est publié tel quel (factorio_version
 #   2.1). La 2.0 n'est plus maintenue (branche factorio-2.0 pour un éventuel hotfix).
+#   Les DEUX variantes portent le MÊME numéro, à bumper ensemble — y compris quand
+#   l'une n'a rien de neuf à annoncer (son changelog n'aura alors que des
+#   « Changes »). Le code étant commun à ~95 %, une version doit désigner un état
+#   du repo, pas d'un paquet : sinon retrouver le commit derrière un rapport de bug
+#   demande une table de correspondance entre deux compteurs qui divergent.
 #
 # Usage :
 #   ./build.sh package            # 2 zips : bp + stc (Factorio 2.1)

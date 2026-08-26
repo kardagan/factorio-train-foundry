@@ -1,4 +1,16 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.3.0
+Date: 2026-08-26
+  Changes:
+    - The "In progress" panel now says WHICH of the two departure conditions is holding the train:
+      "Internal track occupied" or "Exit signal closed" -- the latter with a note that the exit block
+      runs to the next signal on your network, so a train passing far from the foundry can hold it
+      back. Both used to read "Waiting for clear track", which sent you looking at the wrong end.
+      When neither holds the train, the panel says it is leaving instead of announcing a wait that
+      isn't there.
+  Bugfixes:
+    - A build waiting for the internal track to clear showed no message at all.
+---------------------------------------------------------------------------------------------------
 Version: 1.2.0
 Date: 2026-08-12
   Features:

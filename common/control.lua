@@ -76,6 +76,10 @@ local function ensure_storage()
   -- player_index -> { cursor, chart } rendus de l'aperçu de placement. Recréé au besoin
   -- (perdu au rechargement). Voir le bloc APERÇU.
   storage.preview_ids = storage.preview_ids or {}
+  -- player_index -> brouillon du COMPOSEUR de template custom (variante STC) :
+  -- { id, name, storage, slots = { {name, quality, flip} } }. Il ne vit que le
+  -- temps de l'édition ; la sauvegarde le recopie dans st.custom.
+  storage.composer = storage.composer or {}
 end
 
 -- Entité du BORD EST d'une chaîne : la dernière extension (rangées ouest -> est)
@@ -144,7 +148,12 @@ local function migrate_all()
   for _, player in pairs(game.players) do
     gui.close(player)
     gui.close_bp(player)
+    -- Le composeur SURVIT volontairement à gui.close (fenêtre de travail) : ici on
+    -- le ferme explicitement, sa structure étant celle de l'ancienne version.
+    gui.close_composer(player)
   end
+  -- Les brouillons d'édition décrivaient les fenêtres qu'on vient de fermer.
+  storage.composer = {}
   for un, st in pairs(storage.foundries) do
     st.rails = st.rails or {}
     -- Vieilles saves : toutes les fonderies étaient des maîtres autonomes.
@@ -207,6 +216,12 @@ local function migrate_all()
       -- MAÎTRE : champs de production + enfants.
       st.templates = st.templates or {}
       st.queue = st.queue or {}
+      -- Templates CUSTOM (variante STC, 1.3.0) : compositions dessinées par le
+      -- joueur. Liste vide sur une save existante — les modèles par défaut lus
+      -- chez STC restent exactement ce qu'ils étaient, et l'onglet ouvert au
+      -- démarrage est « par défaut ».
+      st.custom = st.custom or {}
+      st.custom_next_id = st.custom_next_id or 1
       st.extensions = st.extensions or {}
       st.recycle_stops = st.recycle_stops or {}
       -- Champ st.source_mode supprimé (chaque variante est mono-source) ; on le
@@ -918,6 +933,19 @@ script.on_nth_tick(TICK_INTERVAL, function()
         gui.close(player)
       end
     end
+    -- Composeur (variante STC) : fenêtre de TRAVAIL, elle survit volontairement à
+    -- la fermeture de la principale — mais pas à la disparition de sa fonderie
+    -- (plus rien à quoi rattacher la composition).
+    if names.source == "stc" then
+      local cun = gui.composer_context(player)
+      if cun then
+        local cst = storage.foundries[cun]
+        if not (cst and cst.entity and cst.entity.valid) then
+          gui.close_composer(player)
+          storage.composer[player.index] = nil
+        end
+      end
+    end
     -- Fenêtre coffre à blueprints (indépendante) : la resynchroniser si son
     -- coffre a changé (dépôt/retrait aux bras pendant qu'elle est ouverte).
     if names.has_bpchest then
@@ -945,6 +973,55 @@ local function enqueue(state, template, params)
     template = template,
     params = params,
   }
+end
+
+-- ----------------------------------------------------------------------------
+-- Templates CUSTOM (variante STC) : compositions dessinées par le joueur
+-- ----------------------------------------------------------------------------
+-- Un custom persisté vaut { id, name, storage, slots = { {name, quality, flip} } }
+-- et vit dans st.custom (par fonderie — une fonderie par planète, donc « par
+-- fonderie » ≈ « par planète »). Son ID est stable et jamais réutilisé : la liste
+-- se réordonne quand on supprime une ligne, l'index ne peut donc pas servir de
+-- référence entre l'ouverture d'un dialogue et sa validation.
+--
+-- La FORME (nom des gares, itinéraire) et la validation vivent dans stc_template ;
+-- ici on ne fait que la persistance et l'aiguillage des clics.
+
+-- Le custom d'id donné, et sa position dans la liste. nil s'il a été supprimé.
+local function find_custom(st, id)
+  for i, ct in ipairs(st.custom or {}) do
+    if ct.id == id then return ct, i end
+  end
+  return nil
+end
+
+-- Copie INDÉPENDANTE d'un custom (nil → composition vierge) : le composeur édite
+-- un brouillon, jamais l'objet persisté — sinon annuler laisserait les
+-- modifications en place. `table.deepcopy` n'existe pas au control stage ; la
+-- structure est plate et connue, on la recopie explicitement.
+local function draft_of(ct)
+  local d = {
+    id = ct and ct.id or nil,
+    name = (ct and ct.name) or "",
+    storage = (ct and ct.storage) and true or false,
+    slots = {},
+  }
+  for i, s in ipairs((ct and ct.slots) or {}) do
+    d.slots[i] = { name = s.name, quality = s.quality, flip = s.flip }
+  end
+  return d
+end
+
+-- Le brouillon d'édition de ce joueur (nil s'il n'édite rien).
+local function composer_draft(player)
+  return storage.composer[player.index]
+end
+
+-- Ouvre le composeur sur `ct` (nil = création) pour la fonderie `st`.
+local function open_composer(player, st, ct)
+  local draft = draft_of(ct)
+  storage.composer[player.index] = draft
+  gui.open_composer(player, st, draft)
 end
 
 -- Clic sur un slot de la fenêtre coffre à blueprints :
@@ -1147,10 +1224,32 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
     return
   end
 
+  -- Composeur : marqueur « storage » de la composition. Il entre dans le NOM DE
+  -- GARE (segment group), donc l'aperçu doit être redessiné. Fenêtre autonome →
+  -- traité avant la résolution de la principale, comme les carburants.
+  if el.name == "tf-composer-storage" and names.source == "stc" and stc_template then
+    local draft = composer_draft(player)
+    local cun = gui.composer_context(player)
+    local cst = cun and storage.foundries[cun]
+    if not (draft and cst and cst.entity and cst.entity.valid) then return end
+    draft.storage = el.state and true or false
+    gui.refresh_composer(player, cst, draft)
+    return
+  end
+
   local un = gui.window_unit_number(player)
   if not un then return end
   local st = storage.foundries[un]
   if not (st and st.entity and st.entity.valid) then return end
+
+  -- Onglet de la liste (variante STC) : formes lues chez Smart Train Combinator
+  -- ou compositions custom du joueur. Un radiobutton cliqué revient toujours
+  -- state=true ; c'est refresh_templates qui décoche l'autre.
+  if el.tags.tf_stc_tab then
+    st.stc_tab = el.tags.tf_stc_tab
+    gui.refresh_templates(player, st)
+    return
+  end
 
   -- Circuit : case d'activation d'un volet (stock / demandes), ou choix d'un fil.
   -- Dans les deux cas on recâble (ensure_circuit lit ces réglages) puis on réécrit
@@ -1249,6 +1348,45 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
   end
 end)
 
+-- Case du COMPOSEUR : le joueur vient de poser ou de retirer un véhicule
+-- (choose-elem-button). C'est l'équivalent du glisser-déposer : clic = picker
+-- filtré, clic avec l'item en main = dépôt direct.
+script.on_event(defines.events.on_gui_elem_changed, function(event)
+  local el = event.element
+  if not (el and el.valid and el.tags and el.tags.tf_composer_slot) then return end
+  if not (names.source == "stc" and stc_template) then return end
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  ensure_storage()
+  local draft = composer_draft(player)
+  local un = gui.composer_context(player)
+  local st = un and storage.foundries[un]
+  if not (draft and st and st.entity and st.entity.valid) then return end
+
+  local i = el.tags.tf_composer_slot
+  local v = el.elem_value
+  if v == nil then
+    -- Case VIDÉE : le train se raccourcit et les véhicules suivants se décalent
+    -- (une composition ne peut pas avoir de trou — les véhicules d'un train sont
+    -- attelés). Vider la case libre de fin de rangée ne fait rien.
+    if draft.slots[i] then table.remove(draft.slots, i) end
+  else
+    -- elem_type = "entity-with-quality" → { name, quality } ; on tolère la forme
+    -- chaîne d'un picker "entity" nu, au cas où.
+    local name = (type(v) == "table") and v.name or v
+    local quality = (type(v) == "table") and (v.quality or "normal") or "normal"
+    local prev = draft.slots[i]
+    draft.slots[i] = {
+      name = name, quality = quality,
+      -- On CONSERVE l'orientation déjà choisie : remplacer une loco par une autre
+      -- (changement de tier) ne doit pas remettre d'office la loco de queue dans
+      -- le sens de la tête.
+      flip = prev and prev.flip or nil,
+    }
+  end
+  gui.refresh_composer(player, st, draft)
+end)
+
 script.on_event(defines.events.on_gui_click, function(event)
   local el = event.element
   if not (el and el.valid) then return end
@@ -1296,6 +1434,90 @@ script.on_event(defines.events.on_gui_click, function(event)
     local inner = w and w.valid and w["tf-fuel-inner"]
     gui.refresh_fuel_pref(inner and inner["tf-fuel-pref"], st)
     return
+  end
+
+  -- ----- COMPOSEUR de template custom (variante STC) ---------------------
+  -- Fenêtre AUTONOME : elle porte son propre contexte (unit_number + id édité),
+  -- donc ses clics sont traités AVANT la résolution de la fenêtre principale.
+  if names.source == "stc" and stc_template then
+    -- Bouton d'orientation : retourne la loco du slot visé (loco de queue à
+    -- contre-sens, double traction poussante).
+    if el.tags and el.tags.tf_composer_flip then
+      ensure_storage()
+      local draft = composer_draft(player)
+      local cun = gui.composer_context(player)
+      local cst = cun and storage.foundries[cun]
+      if not (draft and cst and cst.entity and cst.entity.valid) then return end
+      local s = draft.slots[el.tags.tf_composer_flip]
+      if s then s.flip = not s.flip end
+      gui.refresh_composer(player, cst, draft)
+      return
+    end
+
+    if el.name == "tf-composer-close" or el.name == "tf-composer-cancel" then
+      ensure_storage()
+      gui.close_composer(player)
+      storage.composer[player.index] = nil
+      return
+    end
+
+    if el.name == "tf-composer-save" then
+      ensure_storage()
+      local draft = composer_draft(player)
+      local cun, edit_id = gui.composer_context(player)
+      local cst = cun and storage.foundries[cun]
+      if not (draft and cst and cst.entity and cst.entity.valid) then
+        gui.close_composer(player)
+        storage.composer[player.index] = nil
+        return
+      end
+      -- Le nom est lu ICI et non à chaque frappe : le composeur se redessine à
+      -- chaque changement de case, et relire le champ à ce moment-là ferait
+      -- sauter le curseur de saisie.
+      draft.name = gui.composer_name(player)
+      -- Refus d'une composition qui ne décrit pas une forme exploitable. La
+      -- fenêtre reste ouverte : le composeur affiche déjà la raison.
+      if not stc_template.shape_of(draft) then
+        gui.refresh_composer(player, cst, draft)
+        return
+      end
+      cst.custom = cst.custom or {}
+      local saved = draft_of(draft)  -- la liste garde SA copie, pas le brouillon
+      local at = nil
+      if edit_id then
+        local _
+        _, at = find_custom(cst, edit_id)
+      end
+      if at then
+        saved.id = edit_id
+        cst.custom[at] = saved
+      else
+        -- Création — ou édition d'une ligne supprimée entre-temps, qui revient
+        -- alors comme une nouvelle (plutôt que de perdre le travail du joueur).
+        saved.id = cst.custom_next_id or 1
+        cst.custom_next_id = saved.id + 1
+        cst.custom[#cst.custom + 1] = saved
+      end
+      gui.close_composer(player)
+      storage.composer[player.index] = nil
+      -- La liste custom n'est visible que dans son onglet : on s'y place, sinon
+      -- le joueur ne verrait rien de ce qu'il vient d'enregistrer.
+      cst.stc_tab = "custom"
+      if gui.window_unit_number(player) == cun then
+        gui.refresh_templates(player, cst)
+      end
+      return
+    end
+
+    -- « Nouveau template » : en tête de la liste custom (fenêtre principale).
+    if el.name == "tf-custom-add" then
+      ensure_storage()
+      local aun = gui.window_unit_number(player)
+      local ast = aun and storage.foundries[aun]
+      if not (ast and ast.entity and ast.entity.valid) then return end
+      open_composer(player, ast, nil)
+      return
+    end
   end
 
   -- Slot d'ingrédient/carburant : clic → Factoriopedia de l'item (le tooltip
@@ -1426,14 +1648,20 @@ script.on_event(defines.events.on_gui_click, function(event)
   end
   if el.name == "tf-params-go" then
     ensure_storage()
-    local params, p_un, p_index, p_sig, p_stc = gui.collect_params(player)
+    local params, p_un, p_index, p_sig, p_stc, p_custom = gui.collect_params(player)
     local frame = player.gui.screen[gui.PARAMS_WINDOW]
     if frame then frame.destroy() end
     if not params then return end
     local p_st = storage.foundries[p_un]
     if not p_st then return end
     local t
-    if p_stc and names.source == "stc" and stc_template then
+    if p_custom and names.source == "stc" and stc_template then
+      -- Composition CUSTOM : relue par ID (la liste a pu se réordonner depuis
+      -- l'ouverture du dialogue) et reconstruite en template synthétique.
+      local ct = find_custom(p_st, p_custom)
+      if not ct then return end
+      t = stc_template.build_custom(ct)
+    elseif p_stc and names.source == "stc" and stc_template then
       -- Modèle STC : on reconstruit le template synthétique depuis la forme mise
       -- en cache (state.stc_models) au dernier rafraîchissement du livre.
       local m = p_st.stc_models and p_st.stc_models[p_stc]
@@ -1486,6 +1714,39 @@ script.on_event(defines.events.on_gui_click, function(event)
     local t = stc_template.build(m)
     -- On connaît le kind (item/fluid) → picker de ressource restreint à ce type.
     gui.open_params(player, st, el.tags.index, t, el.tags.index, m.kind)
+  elseif names.source == "stc" and stc_template
+      and el.tags and el.tags.tf_action == "custom-model" then
+    -- Composition CUSTOM : même flux qu'un modèle par défaut (on demande la
+    -- ressource, la forme est reconstruite à la validation), à ceci près qu'on
+    -- retient l'ID et non l'index — la liste peut se réordonner entre-temps.
+    local ct = (st.custom or {})[el.tags.index]
+    if not ct then return end
+    local tmpl, err = stc_template.build_custom(ct)
+    if not tmpl then
+      player.create_local_flying_text({
+        text = { "tf-gui.custom-err-" .. err }, position = st.entity.position })
+      return
+    end
+    -- Un train plus long que la fonderie ne pourrait jamais sortir : on refuse
+    -- ici plutôt que de le laisser bloquer la file (spawn le rejetterait après
+    -- avoir attendu tous ses composants).
+    if #tmpl.stock > builder.capacity(st) then
+      player.create_local_flying_text({
+        text = { "tf-gui.custom-too-long", #tmpl.stock, builder.capacity(st) },
+        position = st.entity.position })
+      return
+    end
+    local shape = stc_template.shape_of(ct)
+    gui.open_params(player, st, el.tags.index, tmpl, nil, shape.kind, ct.id)
+  elseif names.source == "stc" and stc_template
+      and el.tags and el.tags.tf_action == "custom-edit" then
+    local ct = (st.custom or {})[el.tags.index]
+    if not ct then return end
+    open_composer(player, st, ct)
+  elseif names.source == "stc" and stc_template
+      and el.tags and el.tags.tf_action == "custom-del" then
+    if st.custom then table.remove(st.custom, el.tags.index) end
+    gui.refresh_templates(player, st)
   elseif el.tags and el.tags.tf_action == "cancel-queued" then
     table.remove(st.queue, el.tags.index)
     gui.refresh_queue(player, st)

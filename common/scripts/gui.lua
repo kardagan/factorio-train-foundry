@@ -13,6 +13,11 @@
 
 local names = require("names")
 local builder = require("scripts.builder")
+-- Variante STC uniquement : formes/validation des templates. Le composeur de
+-- composition custom (fenêtre + liste) vit ici parce qu'il réutilise les helpers
+-- de tuiles de ce fichier ; toute la logique de FORME (nommage des gares,
+-- itinéraire, validation) reste dans stc_template.
+local stc_template = (names.source == "stc") and require("scripts.stc_template") or nil
 
 local gui = {}
 
@@ -43,6 +48,15 @@ local BP_WINDOW = P .. "bp-window"
 local CIRCUIT_WINDOW = P .. "circuit-window"
 -- Fenêtre autonome des carburants acceptés (grille carburants × qualités).
 local FUEL_WINDOW = P .. "fuel-window"
+-- Variante STC : fenêtre autonome du COMPOSEUR de template custom (rangée de
+-- cases où le joueur dessine sa composition).
+local COMPOSER_WINDOW = P .. "composer"
+-- Véhicules par rangée dans le composeur, case « arrêt » NON comprise : au-delà,
+-- la table repasse à la ligne. 10 = deux modules de fonderie, donc la plupart des
+-- compositions tiennent sur une seule rangée.
+local COMPOSER_COLS = 10
+-- Côté d'une case du composeur (choose-elem-button). 40 px = le slot standard.
+local COMPOSER_SLOT = 40
 -- Largeur du tableau des carburants : colonne des noms + une colonne par qualité.
 -- Calculée sur le nombre RÉEL de qualités (un mod peut en ajouter), sinon le tableau
 -- déborderait de son conteneur.
@@ -101,6 +115,12 @@ function gui.close(player)
   if c then c.destroy() end
   local f = player.gui.screen[FUEL_WINDOW]
   if f then f.destroy() end
+  -- Le COMPOSEUR n'est PAS fermé ici, à la différence des autres déportées : c'est
+  -- une fenêtre de TRAVAIL (une composition en cours de dessin), et la principale
+  -- se ferme sur un simple Échap ou un clic ailleurs. Il n'est pas non plus
+  -- player.opened (sinon l'ouvrir fermerait la principale, dont la fermeture le
+  -- détruirait en retour) : il se ferme par ses boutons, ou avec la disparition de
+  -- sa fonderie (boucle de production).
 end
 
 local function body_of(player)
@@ -458,6 +478,137 @@ function gui.refresh_stc_models(player, state, list)
   end
 end
 
+-- Mode STC, onglet « personnalisé » : la source des trains est la liste des
+-- compositions dessinées par le joueur (state.custom), et non les formes lues chez
+-- STC. Une ligne par composition — tuile cliquable (mise en file, la ressource est
+-- demandée comme pour un modèle par défaut), nom, compteurs, et deux boutons
+-- (éditer / supprimer). Une composition devenue invalide (mod retiré → wagon
+-- disparu) s'affiche en rouge et n'est pas enfilable, comme un plan rejeté.
+function gui.refresh_custom_models(player, state, list)
+  -- Bouton d'ajout en tête : c'est le seul point d'entrée du composeur, il doit
+  -- rester visible même quand la liste est vide.
+  local add = list.add({
+    type = "button",
+    name = "tf-custom-add",
+    caption = { "tf-gui.custom-add" },
+    tooltip = { "tf-gui.custom-add-tip" },
+  })
+  add.style.horizontally_stretchable = true
+  add.style.bottom_margin = 8
+
+  local customs = state.custom or {}
+  if #customs == 0 then
+    local hint = list.add({ type = "label", caption = { "tf-gui.custom-empty" } })
+    hint.style.single_line = false
+    hint.style.maximal_width = 340
+    return
+  end
+
+  for i, ct in ipairs(customs) do
+    local shape, err = stc_template.shape_of(ct)
+    local row = list.add({ type = "flow", direction = "horizontal" })
+    row.style.vertical_align = "center"
+    row.style.bottom_margin = 6
+
+    -- Icônes de la tuile, MÊME grammaire que les modèles par défaut (loco + wagon
+    -- + le nombre N en signaux-chiffres + marqueur storage) pour que les deux
+    -- onglets se lisent pareil. La loco montrée est celle de TÊTE : le détail de
+    -- la composition (double traction…) est dans la ligne de compteurs en dessous.
+    local sigs = {}
+    if shape then
+      local head_loco
+      for _, s in ipairs(ct.slots) do
+        if stc_template.slot_class(s) == "loco" then head_loco = s break end
+      end
+      if head_loco then
+        local lsprite = rolling_stock_sprite(head_loco.name)
+        if lsprite then
+          sigs[#sigs + 1] = { sprite = lsprite, quality = head_loco.quality }
+        end
+      end
+      local wsprite = rolling_stock_sprite(shape.wagon_type)
+      if wsprite then
+        sigs[#sigs + 1] = { sprite = wsprite, quality = shape.wagon_quality }
+      end
+      for _, d in ipairs(digit_sprites(shape.wagons)) do sigs[#sigs + 1] = d end
+      if shape.storage and helpers.is_valid_sprite_path("virtual-signal/stc2-storage") then
+        sigs[#sigs + 1] = "virtual-signal/stc2-storage"
+      end
+    else
+      -- Composition invalide : on montre quand même ses premiers véhicules, c'est
+      -- ce qui permet au joueur de reconnaître la ligne à corriger.
+      for _, s in ipairs(ct.slots or {}) do
+        local sp = rolling_stock_sprite(s.name)
+        if sp and #sigs < 5 then sigs[#sigs + 1] = { sprite = sp, quality = s.quality } end
+      end
+    end
+
+    -- Le stock réel de la composition : sert aux compteurs (ce qui sera prélevé
+    -- dans la réserve, locos comprises).
+    local m_stock = {}
+    for _, s in ipairs(ct.slots or {}) do
+      m_stock[#m_stock + 1] = { name = s.name, quality = s.quality }
+    end
+
+    local title = stc_template.custom_caption(ct, shape)
+    if title == "" then title = { "tf-gui.untitled" } end
+    local tip
+    if shape then
+      tip = { "", title, "\n", stock_caption({ stock = m_stock }), "\n",
+              { "tf-gui.slot-filled-queue" } }
+    else
+      tip = { "", { "tf-gui.custom-invalid" }, "\n[color=255,80,80]",
+              { "tf-gui.custom-err-" .. err }, "[/color]" }
+    end
+
+    bp_wide_tile(row, sigs, {
+      tooltip = tip,
+      plain = true,  -- pas de fond bleu blueprint : ce ne sont pas des BP
+      -- Une composition invalide n'est PAS enfilable : pas de tag d'action.
+      tags = shape and { tf_action = "custom-model", index = i } or nil,
+    })
+
+    local info = row.add({ type = "flow", direction = "vertical" })
+    info.style.left_margin = 8
+    info.style.horizontally_stretchable = true
+    info.style.vertical_align = "center"
+    local name = info.add({ type = "label", caption = title })
+    name.style.font = "default-semibold"
+    name.style.single_line = false
+    name.style.maximal_width = 190
+    if not shape then name.style.font_color = { 1, 0.4, 0.4 } end
+    local sub = info.add({
+      type = "label",
+      caption = shape and stock_caption({ stock = m_stock })
+        or { "tf-gui.custom-err-" .. err },
+    })
+    sub.style.font_color = shape and { 0.8, 0.8, 0.8 } or { 1, 0.4, 0.4 }
+    sub.style.single_line = false
+    sub.style.maximal_width = 190
+
+    -- Boutons de ligne : éditer puis supprimer, collés à droite.
+    local acts = row.add({ type = "flow", direction = "horizontal" })
+    acts.style.vertical_align = "center"
+    acts.style.horizontal_spacing = 2
+    local edit = acts.add({
+      type = "sprite-button",
+      style = "tool_button",
+      sprite = "utility/rename_icon",
+      tooltip = { "tf-gui.custom-edit" },
+      tags = { tf_action = "custom-edit", index = i },
+    })
+    edit.style.size = 28
+    local del = acts.add({
+      type = "sprite-button",
+      style = "tool_button_red",
+      sprite = "utility/trash",
+      tooltip = { "tf-gui.custom-del" },
+      tags = { tf_action = "custom-del", index = i },
+    })
+    del.style.size = 28
+  end
+end
+
 -- Livre de plans : reflet EN DIRECT du coffre à blueprints. Une ligne par
 -- plan déposé — icône + nom (clic gauche : mise en file). Un plan non conforme
 -- (autre qu'un train, trop long, pas sur voie droite) apparaît en rouge, non
@@ -472,11 +623,28 @@ function gui.refresh_templates(player, state)
   end
   list.clear()
 
-  -- Mode STC : la source n'est plus le coffre de plans mais les modèles lus chez
-  -- Smart Train Combinator. Rendu et clic distincts (voir refresh_stc_models).
+  -- Mode STC : la source n'est plus le coffre de plans mais, selon l'onglet, les
+  -- modèles lus chez Smart Train Combinator ou les compositions custom du joueur.
+  -- Rendu et clic distincts (voir refresh_stc_models / refresh_custom_models).
   -- La variante est mono-source : names.source tranche une fois pour toutes.
   if names.source == "stc" then
-    gui.refresh_stc_models(player, state, list)
+    -- Les onglets vivent HORS du scroll (donc hors du clear ci-dessus) : on remet
+    -- juste leur état à jour, au cas où le changement vienne d'ailleurs que d'un
+    -- clic du joueur (réouverture de la fenêtre, autre joueur…).
+    local tabs = body["tf-left"]["tf-stc-tabs"]
+    local tab = state.stc_tab or "default"
+    if tabs then
+      for _, rb in pairs(tabs.children) do
+        if rb.tags and rb.tags.tf_stc_tab then
+          rb.state = (rb.tags.tf_stc_tab == tab)
+        end
+      end
+    end
+    if tab == "custom" then
+      gui.refresh_custom_models(player, state, list)
+    else
+      gui.refresh_stc_models(player, state, list)
+    end
     return
   end
 
@@ -781,11 +949,33 @@ function gui.refresh_work(player, state)
     warn.style.maximal_width = RIGHT_WIDTH - 24
   end
 
-  -- État sous les composants : attente de voie (les manques composants/carburant
-  -- sont déjà lisibles sur les slots).
-  if (work.phase == "waiting" and not work.blocked)
+  -- État sous les composants (les manques composants/carburant sont déjà lisibles
+  -- sur les slots). Les DEUX conditions de départ — voie interne libre et bloc de
+  -- sortie ouvert — sont distinguées : elles se ressemblent à l'écran alors qu'on
+  -- les répare à des endroits opposés, et un signal de sortie rouge n'a rien
+  -- d'évident (le bloc court jusqu'au prochain signal du réseau du joueur, donc un
+  -- train qui passe LOIN de la fonderie la retient). L'attente sur la voie est
+  -- incluse ici : en phase « waiting » elle portait le drapeau blocked == "track"
+  -- et n'affichait alors AUCUN message.
+  if (work.phase == "waiting" and (not work.blocked or work.blocked == "track"))
     or work.phase == "ready" then
-    flow.add({ type = "label", caption = { "tf-gui.work-ready" } })
+    if not builder.track_free(state) then
+      flow.add({ type = "label", caption = { "tf-gui.work-track-busy" } })
+    elseif not builder.exit_open(state) then
+      flow.add({ type = "label", caption = { "tf-gui.work-exit-closed" } })
+      -- La cause la moins devinable mérite son mode d'emploi, en gris sous le
+      -- message : c'est le découpage en blocs qu'il faut corriger, pas la fonderie.
+      local hint = flow.add({
+        type = "label", caption = { "tf-gui.work-exit-closed-hint" } })
+      hint.style.font = "default-small"
+      hint.style.font_color = { 0.8, 0.8, 0.8 }
+      hint.style.single_line = false
+      hint.style.maximal_width = RIGHT_WIDTH - 24
+    else
+      -- Ni voie ni sortie : plus rien ne retient le train, il sort au prochain
+      -- tick de production.
+      flow.add({ type = "label", caption = { "tf-gui.work-ready" } })
+    end
   end
 end
 
@@ -932,6 +1122,38 @@ function gui.open(player, state)
     addbtn.style.size = 24
   end
   lhead.style.bottom_margin = 8  -- espace entre l'en-tête et la liste des plans
+
+  -- Variante STC : sélecteur de la SOURCE des trains, au-dessus de la liste (hors
+  -- du scroll, pour rester visible quand la liste défile).
+  --   « par défaut » = les formes lues chez Smart Train Combinator (composition
+  --     imposée : une loco de tête + N wagons) ;
+  --   « personnalisé » = les compositions dessinées par le joueur (double
+  --     traction, loco de queue à contre-sens…), persistées par fonderie.
+  -- À forme égale les deux produisent les MÊMES noms de gares : le choix ne porte
+  -- que sur la composition physique du train.
+  local tabs_h = 0
+  if names.source == "stc" then
+    local tabs = left.add({
+      type = "flow", name = "tf-stc-tabs", direction = "horizontal",
+    })
+    tabs.style.vertical_align = "center"
+    tabs.style.horizontal_spacing = 12
+    tabs.style.bottom_margin = 8
+    local current = state.stc_tab or "default"
+    for _, tab in ipairs({ { "default", "tf-gui.stc-tab-default" },
+                           { "custom",  "tf-gui.stc-tab-custom" } }) do
+      tabs.add({
+        type = "radiobutton",
+        caption = { tab[2] },
+        state = (current == tab[1]),
+        tags = { tf_stc_tab = tab[1] },
+      })
+    end
+    -- La colonne droite fixe la hauteur de la fenêtre : ce qu'on prend ici pour
+    -- les onglets doit être retiré au scroll, sinon la gauche dépasse.
+    tabs_h = 32
+  end
+
   -- Hauteur FIXE : la fenêtre ne grandit pas avec le nombre de plans.
   local tscroll = left.add({
     type = "scroll-pane", name = "tf-templates-scroll",
@@ -940,7 +1162,7 @@ function gui.open(player, state)
   -- Hauteur FIXE de la fenêtre : la colonne gauche (liste des plans) s'étire pour
   -- remplir toute la hauteur de la colonne droite (WINDOW_BODY_HEIGHT), quel que
   -- soit le nombre de plans (scroll interne au-delà).
-  tscroll.style.height = WINDOW_BODY_HEIGHT
+  tscroll.style.height = WINDOW_BODY_HEIGHT - tabs_h
   tscroll.style.horizontally_stretchable = true
   tscroll.add({ type = "flow", name = "tf-templates", direction = "vertical" })
 
@@ -1533,6 +1755,323 @@ function gui.refresh_fuel_pref(scroll, state)
 end
 
 -- ---------------------------------------------------------------------------
+-- Composeur de template CUSTOM (variante STC)
+-- ---------------------------------------------------------------------------
+-- Le joueur dessine sa composition dans une rangée de cases, à la façon d'un
+-- coffre : la PREMIÈRE case (fixe, non éditable) est un ARRÊT DE TRAIN et marque
+-- la TÊTE du train — le sens de marche par défaut, celui de la sortie gauche. Les
+-- cases suivantes sont des choose-elem-button restreints au matériel roulant :
+-- clic = picker filtré, clic avec l'item en main = dépôt direct (il n'existe pas
+-- de vrai glisser-déposer dans les GUI de mod ; ce contrôle en est l'équivalent).
+-- Une case vide en fin de rangée rallonge le train ; vider une case le raccourcit
+-- (les suivantes se décalent).
+--
+-- Au-dessus de chaque LOCOMOTIVE, un bouton retourne son orientation : c'est ce
+-- qui permet une loco de queue à contre-sens (train à double sens) ou une double
+-- traction poussante. Les wagons n'ont pas d'orientation signifiante (ils sont
+-- symétriques), donc pas de bouton.
+--
+-- Le DRAFT (composition en cours d'édition) est porté par control.lua
+-- (storage.composer[player_index]) et passé ici en paramètre : la fenêtre ne
+-- garde aucun état propre, elle est entièrement redessinée à chaque changement.
+-- Seul le champ NOM est lu depuis l'élément au moment de la sauvegarde, pour ne
+-- pas perdre le curseur de saisie à chaque frappe.
+
+gui.COMPOSER_WINDOW = COMPOSER_WINDOW
+
+-- Filtres du picker : matériel roulant TRACTABLE uniquement. Le wagon
+-- d'artillerie est volontairement absent — il entrerait dans le compte N et donc
+-- dans le nom de gare, qui ne correspondrait alors à aucune gare STC. Le filtre
+-- "rolling-stock" du jeu l'inclurait, d'où l'énumération explicite des types (le
+-- champ accepte un tableau, donc un seul filtre : pas de `mode` à combiner).
+local ROLLING_FILTERS = {
+  { filter = "type", type = { "locomotive", "cargo-wagon", "fluid-wagon" } },
+}
+
+-- Premier chemin de sprite valide d'une liste, ou nil. Les noms des sprites
+-- utility varient d'une version à l'autre et un chemin invalide dans add{} PLANTE
+-- (contrairement à un rich-text, qui ne rate qu'à l'affichage).
+local function first_sprite(paths)
+  for _, path in ipairs(paths) do
+    if helpers.is_valid_sprite_path(path) then return path end
+  end
+  return nil
+end
+
+-- Case « arrêt de train » : repère de tête de train, non éditable.
+local STOP_SPRITES = { "entity/train-stop", "item/train-stop",
+                       "utility/train_stop_in_map_view" }
+-- Flèches d'orientation. Repli en CARACTÈRE si aucun sprite ne convient : le
+-- bouton doit rester cliquable même sans icône.
+local ARROW_SPRITES = {
+  west = { "utility/left_arrow", "utility/hint_arrow_left" },
+  east = { "utility/right_arrow", "utility/hint_arrow_right" },
+}
+local ARROW_TEXT = { west = "◀", east = "▶" }
+
+function gui.close_composer(player)
+  local w = player.gui.screen[COMPOSER_WINDOW]
+  if w then w.destroy() end
+end
+
+-- Contexte de la fenêtre ouverte : unit_number de la fonderie et id du template
+-- édité (nil = création). La fenêtre est autonome (déplaçable, elle peut rester
+-- ouverte sans la principale), donc elle porte son propre contexte.
+function gui.composer_context(player)
+  local w = player.gui.screen[COMPOSER_WINDOW]
+  if not (w and w.valid) then return nil end
+  return w.tags.unit_number, w.tags.custom_id
+end
+
+-- Nom saisi dans le champ (chaîne vide si le champ est absent).
+function gui.composer_name(player)
+  local w = player.gui.screen[COMPOSER_WINDOW]
+  if not (w and w.valid) then return "" end
+  local field = w["tf-composer-inner"]["tf-composer-head"]["tf-composer-name"]
+  return (field and field.valid) and field.text or ""
+end
+
+function gui.open_composer(player, state, draft)
+  gui.close_composer(player)
+
+  local frame = player.gui.screen.add({
+    type = "frame",
+    name = COMPOSER_WINDOW,
+    direction = "vertical",
+    tags = { unit_number = state.entity.unit_number, custom_id = draft.id },
+  })
+
+  local titlebar = frame.add({ type = "flow", direction = "horizontal" })
+  titlebar.drag_target = frame
+  titlebar.add({
+    type = "label",
+    caption = { draft.id and "tf-gui.composer-title-edit"
+                         or "tf-gui.composer-title-new" },
+    style = "frame_title",
+    ignored_by_interaction = true,
+  })
+  local drag = titlebar.add({ type = "empty-widget",
+    style = "draggable_space_header" })
+  drag.style.horizontally_stretchable = true
+  drag.style.height = 24
+  drag.drag_target = frame
+  titlebar.add({
+    type = "sprite-button",
+    name = "tf-composer-close",
+    style = "frame_action_button",
+    sprite = "utility/close",
+  })
+
+  local inner = frame.add({
+    type = "frame",
+    name = "tf-composer-inner",
+    style = "inside_shallow_frame",
+    direction = "vertical",
+  })
+  inner.style.padding = 12
+  -- Largeur FIXE : la rangée de cases passe à la ligne au-delà de COMPOSER_COLS,
+  -- la fenêtre ne doit donc pas se redimensionner à chaque ajout de véhicule.
+  local body_w = (COMPOSER_COLS + 1) * (COMPOSER_SLOT + 4) + 8
+  inner.style.width = body_w
+
+  local head = inner.add({
+    type = "flow", name = "tf-composer-head", direction = "horizontal",
+  })
+  head.style.vertical_align = "center"
+  head.style.bottom_margin = 8
+  head.add({ type = "label", caption = { "tf-gui.composer-name" } })
+  local field = head.add({
+    type = "textfield", name = "tf-composer-name",
+    text = draft.name or "",
+  })
+  field.style.horizontally_stretchable = true
+  field.style.left_margin = 8
+
+  local hint = inner.add({ type = "label", caption = { "tf-gui.composer-hint" } })
+  hint.style.single_line = false
+  hint.style.maximal_width = body_w
+  hint.style.bottom_margin = 8
+
+  inner.add({
+    type = "table", name = "tf-composer-slots",
+    column_count = COMPOSER_COLS + 1,   -- + la case « arrêt » de tête
+  })
+
+  -- Bandeau d'état : forme déduite + capacité, puis la case storage à droite.
+  local status = inner.add({
+    type = "flow", name = "tf-composer-status", direction = "horizontal",
+  })
+  status.style.vertical_align = "center"
+  status.style.top_margin = 8
+  local shape_lbl = status.add({ type = "label", name = "tf-composer-shape" })
+  shape_lbl.style.horizontally_stretchable = true
+  status.add({
+    type = "checkbox", name = "tf-composer-storage",
+    caption = { "tf-gui.composer-storage" },
+    tooltip = { "tf-gui.composer-storage-tip" },
+    state = draft.storage and true or false,
+  })
+
+  -- Aperçu du nom de gare de CHARGEMENT : c'est le contrat avec Smart Train
+  -- Combinator (matching byte-à-byte), donc le joueur doit pouvoir le comparer
+  -- d'un coup d'œil à ses gares existantes.
+  local station = inner.add({ type = "label", name = "tf-composer-station" })
+  station.style.single_line = false
+  station.style.maximal_width = body_w
+  station.style.top_margin = 6
+
+  local err = inner.add({ type = "label", name = "tf-composer-error" })
+  err.style.single_line = false
+  err.style.maximal_width = body_w
+  err.style.font_color = { 1, 0.4, 0.4 }
+  err.style.top_margin = 4
+
+  local buttons = frame.add({ type = "flow", direction = "horizontal" })
+  buttons.style.top_margin = 8
+  buttons.add({
+    type = "button", name = "tf-composer-cancel",
+    caption = { "tf-gui.params-cancel" },
+  })
+  local spacer = buttons.add({ type = "empty-widget" })
+  spacer.style.horizontally_stretchable = true
+  buttons.add({
+    type = "button", name = "tf-composer-save",
+    caption = { "tf-gui.composer-save" }, style = "confirm_button",
+  })
+
+  frame.force_auto_center()
+  gui.refresh_composer(player, state, draft)
+end
+
+-- (Re)dessine la rangée de cases et le bandeau d'état. Le champ NOM et la case
+-- storage ne sont PAS retouchés : ils portent la saisie en cours.
+function gui.refresh_composer(player, state, draft)
+  local frame = player.gui.screen[COMPOSER_WINDOW]
+  if not (frame and frame.valid) then return end
+  local inner = frame["tf-composer-inner"]
+  local table_el = inner["tf-composer-slots"]
+  table_el.clear()
+
+  local slots = draft.slots or {}
+  local capacity = builder.capacity(state)
+
+  -- Colonne d'une case : [bouton d'orientation] / [case] / [libellé].
+  -- Les trois étages existent toujours, vides au besoin, pour que les cases
+  -- restent alignées d'une colonne à l'autre — le libellé du bas ne sert plus
+  -- qu'au repère « tête », le sens d'une loco étant déjà porté par la flèche du
+  -- haut (le répéter en dessous faisait lire deux fois la même chose).
+  local function column()
+    local col = table_el.add({ type = "flow", direction = "vertical" })
+    col.style.horizontal_align = "center"
+    local top = col.add({ type = "flow", direction = "horizontal" })
+    top.style.height = 24
+    top.style.horizontal_align = "center"
+    local mid = col.add({ type = "flow", direction = "horizontal" })
+    local bottom = col.add({ type = "flow", direction = "horizontal" })
+    bottom.style.height = 16
+    bottom.style.horizontal_align = "center"
+    return top, mid, bottom
+  end
+
+  -- Case de TÊTE : l'arrêt de train. Non éditable — c'est un repère de sens, pas
+  -- un véhicule (il ne compte donc pas dans la capacité).
+  do
+    local _, mid, bottom = column()
+    -- Volontairement ACTIF (et non `enabled = false`) : un élément désactivé
+    -- n'affiche pas son tooltip, or c'est lui qui explique le repère. Le clic ne
+    -- porte ni nom ni tag reconnu, il ne fait donc rien.
+    local stop = mid.add({
+      type = "sprite-button",
+      sprite = first_sprite(STOP_SPRITES),
+      tooltip = { "tf-gui.composer-head-tip" },
+    })
+    stop.style.size = COMPOSER_SLOT
+    local lbl = bottom.add({ type = "label", caption = { "tf-gui.composer-head" } })
+    lbl.style.font = "default-small"
+    lbl.style.font_color = { 0.8, 0.8, 0.8 }
+  end
+
+  -- Une colonne par véhicule, plus une case VIDE en fin de rangée tant que la
+  -- fonderie peut allonger le train (capacité de la chaîne).
+  local n_shown = #slots + ((#slots < capacity) and 1 or 0)
+  for i = 1, n_shown do
+    local s = slots[i]
+    local top, mid = column()
+    local class = s and stc_template.slot_class(s) or nil
+
+    -- Bouton d'orientation : locomotives seulement.
+    if class == "loco" then
+      local dir = s.flip and "east" or "west"
+      local sprite = first_sprite(ARROW_SPRITES[dir])
+      local btn
+      if sprite then
+        btn = top.add({
+          type = "sprite-button", style = "mini_button", sprite = sprite,
+          tooltip = { "tf-gui.composer-flip-tip" },
+          tags = { tf_composer_flip = i },
+        })
+      else
+        btn = top.add({
+          type = "button", caption = ARROW_TEXT[dir],
+          tooltip = { "tf-gui.composer-flip-tip" },
+          tags = { tf_composer_flip = i },
+        })
+        btn.style.padding = 0
+        btn.style.minimal_width = 0
+      end
+      btn.style.size = { 24, 20 }
+    end
+
+    local cell = mid.add({
+      type = "choose-elem-button",
+      elem_type = "entity-with-quality",
+      elem_filters = ROLLING_FILTERS,
+      tooltip = { "tf-gui.composer-slot-tip" },
+      tags = { tf_composer_slot = i },
+    })
+    cell.style.size = COMPOSER_SLOT
+    if s then
+      -- Un prototype disparu (mod retiré) ne peut pas être réaffiché : la case
+      -- reste vide, et shape_of signalera la composition comme invalide.
+      if prototypes.entity[s.name] then
+        cell.elem_value = { name = s.name, quality = s.quality or "normal" }
+      end
+    end
+  end
+
+  -- Bandeau d'état : forme déduite (kind + N) et occupation de la fonderie.
+  local shape, err = stc_template.shape_of(draft)
+  local shape_lbl = inner["tf-composer-status"]["tf-composer-shape"]
+  if shape then
+    local kind_lbl = (shape.kind == "fluid") and { "tf-gui.stc-fluid" }
+                                             or { "tf-gui.stc-solid" }
+    shape_lbl.caption = { "tf-gui.composer-shape", kind_lbl, shape.wagons,
+                          #slots, capacity }
+  else
+    shape_lbl.caption = { "tf-gui.composer-shape-none", #slots, capacity }
+  end
+
+  -- Aperçu du nom de gare. La ressource n'est choisie qu'à la mise en file : on
+  -- montre le paramètre par le signal « item paramétré », comme le fait le jeu
+  -- dans un blueprint paramétré (le tag [item=parameter-0] ne s'afficherait pas).
+  local station = inner["tf-composer-station"]
+  if shape then
+    local placeholder = helpers.is_valid_sprite_path("virtual-signal/signal-item-parameter")
+      and "[virtual-signal=signal-item-parameter]" or "?"
+    local preview = stc_template.load_station(shape)
+      :gsub("%[item=parameter%-0%]", placeholder)
+    station.caption = { "tf-gui.composer-station", preview }
+  else
+    station.caption = ""
+  end
+
+  -- Une composition VIERGE n'est pas une erreur : on ne reproche rien au joueur
+  -- avant qu'il ait posé quoi que ce soit.
+  local err_lbl = inner["tf-composer-error"]
+  err_lbl.caption = (err and #slots > 0) and { "tf-gui.custom-err-" .. err } or ""
+end
+
+-- ---------------------------------------------------------------------------
 -- Dialogue des paramètres d'un blueprint paramétré (à la mise en file)
 -- ---------------------------------------------------------------------------
 
@@ -1542,7 +2081,11 @@ end
 -- `res_kind` (optionnel) : "item" ou "fluid" — en mode STC on CONNAÎT le kind du
 -- modèle, donc on restreint le choix de ressource au bon type (picker item OU
 -- fluid) au lieu d'un picker signal générique. nil (BP) → picker signal.
-function gui.open_params(player, state, index, template, stc_index, res_kind)
+-- `custom_id` (optionnel) : id d'un template CUSTOM (state.custom) — troisième
+-- source possible, à côté du coffre de plans et des modèles STC. On garde l'ID et
+-- non l'index : la liste peut se réordonner (suppression d'une autre ligne) entre
+-- l'ouverture du dialogue et la validation.
+function gui.open_params(player, state, index, template, stc_index, res_kind, custom_id)
   local old = player.gui.screen[PARAMS_WINDOW]
   if old then old.destroy() end
   local frame = player.gui.screen.add({
@@ -1558,6 +2101,7 @@ function gui.open_params(player, state, index, template, stc_index, res_kind)
       index = index,
       signature = template.signature,
       stc_index = stc_index,
+      custom_id = custom_id,
     },
   })
   local rows = frame.add({
@@ -1624,7 +2168,7 @@ function gui.collect_params(player)
     end
   end
   return params, frame.tags.unit_number, frame.tags.index,
-    frame.tags.signature, frame.tags.stc_index
+    frame.tags.signature, frame.tags.stc_index, frame.tags.custom_id
 end
 
 -- ---------------------------------------------------------------------------

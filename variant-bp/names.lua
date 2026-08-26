@@ -3,7 +3,11 @@
 -- save 0.6.x reste valide. Le code commun lit UNIQUEMENT ces constantes.
 return {
   source      = "bp",
-  version     = "1.2.0",                  -- semver publié (mod désormais Factorio 2.1 uniquement)
+  -- Semver publié. Les DEUX variantes gardent le MÊME numéro, même quand l'une
+  -- n'a rien de neuf à annoncer : le code est commun à ~95 %, donc « la 1.3.0 »
+  -- doit désigner un état du repo et pas deux. Sans cette règle, retrouver le
+  -- commit derrière un rapport de bug demanderait une table de correspondance.
+  version     = "1.3.0",                  -- (mod désormais Factorio 2.1 uniquement)
   mod         = "train-foundry",          -- nom du mod (chemin __<mod>__/graphics)
   building    = "train-foundry",          -- entité-bâtiment (INCHANGÉ)
   rail        = "tf-rail",
@@ -30,4 +34,10 @@ return {
   dummy_cat   = "train-foundry-dummy",
   remote      = "train-foundry",          -- interface remote historique
   shortcut    = "tf-open-overview",
+  -- Prérequis de la TECHNO (inchangés) : la variante BP ne dépend d'aucun mod,
+  -- elle se branche directement sur les technos de base. Portés par names comme
+  -- ceux de la variante STC, pour que data-common n'ait pas à connaître la
+  -- variante.
+  tech_prereq         = { "advanced-combinators", "automated-rail-transportation" },
+  tech_prereq_nullius = { "nullius-computation", "nullius-traffic-control" },
 }

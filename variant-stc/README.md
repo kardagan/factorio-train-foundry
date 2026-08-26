@@ -15,10 +15,27 @@ sends them off onto your rail network on their own — no blueprint needed.
    variant. (No blueprint chest here.)
 3. **Click a shape**, then **choose its resource** (the picker is restricted to items or fluids to
    match the shape).
-4. **Feed the parts** into the internal stock — by hand or with inserters anywhere along the edge.
-5. The train is **assembled and dispatched** with a matching schedule — a loading stop plus
+4. Or switch the list to **Custom** and draw the train yourself — see below.
+5. **Feed the parts** into the internal stock — by hand or with inserters anywhere along the edge.
+6. The train is **assembled and dispatched** with a matching schedule — a loading stop plus
    refuel / stop / unload interrupts — and a train group encoding the shape. The station names match
    the combinator's own naming convention, so the interrupts line up with your STC stops.
+
+## Custom compositions
+
+The shapes read from the combinators have a fixed composition: one head locomotive plus its
+wagons. The **Custom** tab holds compositions you draw yourself, in a composer that lays the
+train out as a row of slots like a chest lays out its inventory. The first slot is a train stop
+marking the **head** of the train — the direction it leaves in; every slot after it takes a
+locomotive, a cargo wagon or a fluid wagon (click it, or click it with the item in hand). The
+button above a locomotive **turns it around**, which is what double-heading and a tail
+locomotive facing the other way are made of.
+
+A custom train serves **the same stops**: locomotives appear in no station name, so a
+double-header with four wagons produces the same loading station, group and interrupts as the
+default four-wagon shape. Hence the two rules — one wagon type, one wagon quality per
+composition (a station name carries a single wagon icon and a single quality). Locomotives are
+free.
 
 ## Features
 

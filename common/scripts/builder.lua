@@ -812,9 +812,14 @@ function builder.spawn(state, template, params, fuel_item, generic)
   -- tête part à l'est et chaque orientation est inversée. Sinon (gauche seule ou les
   -- deux) → train tel quel, tête à l'ouest.
   --   - BP  : on RESPECTE l'orientation du véhicule (s.orientation), inversée si flip.
-  --   - STC : pas d'orientation propre → ouest par défaut, est si flip.
+  --   - STC par défaut : pas d'orientation propre → ouest par défaut, est si flip.
+  --   - STC CUSTOM : orientations SIGNIFIANTES (une loco de queue à contre-sens en
+  --     porte une opposée à celle de la tête) → traitées comme celles d'un BP.
   local flip_east = state.exit_right and not state.exit_left
   local is_stc = (template.source_kind == "stc")
+  -- L'orientation de chaque véhicule est-elle une donnée à respecter, ou faut-il
+  -- coucher tout le train dans le sens de sortie ?
+  local free_orient = (not is_stc) or template.free_orientation
   local count = #template.stock
 
   -- Orientation est/ouest d'un véhicule BP depuis son orientation Factorio (0..1) :
@@ -830,16 +835,16 @@ function builder.spawn(state, template, params, fuel_item, generic)
     local dir, slot
     if flip_east then
       slot = count - i          -- i=1 (tête BP, ouest) -> slot le plus à l'EST
-      if is_stc then
-        dir = defines.direction.east
-      else
-        -- miroir : on inverse l'orientation BP
+      if free_orient then
+        -- miroir : on inverse l'orientation portée par le véhicule
         dir = (bp_dir(s) == defines.direction.east)
           and defines.direction.west or defines.direction.east
+      else
+        dir = defines.direction.east
       end
     else
       slot = i - 1              -- i=1 (tête) le plus à l'ouest
-      dir = is_stc and defines.direction.west or bp_dir(s)
+      dir = free_orient and bp_dir(s) or defines.direction.west
     end
     local v = e.surface.create_entity({
       name = s.name,

@@ -3,7 +3,7 @@
 -- installé (coexistence « 1 de chaque par surface »). Pas de coffre à blueprints.
 return {
   source      = "stc",
-  version     = "1.2.0",                   -- semver publié (mod Factorio 2.1 uniquement)
+  version     = "1.3.0",                   -- semver publié (mod Factorio 2.1 uniquement)
   mod         = "train-foundry-stc",       -- nom du mod (chemin __<mod>__/graphics)
   building    = "tfstc-foundry",
   rail        = "tfstc-rail",
@@ -27,4 +27,13 @@ return {
   dummy_cat   = "tfstc-dummy",
   remote      = "train-foundry-stc",
   shortcut    = "tfstc-open-overview",
+  -- Prérequis de la TECHNO. La variante STC ne fonctionne pas sans Smart Train
+  -- Combinator (dépendance obligatoire) : sa techno suit donc celle de STC, ce
+  -- qui rend la filiation lisible dans l'arbre. Les prérequis de STC lui-même
+  -- (combinateurs avancés, transport ferroviaire automatisé) sont hérités par
+  -- transitivité — les répéter n'ajouterait que du bruit dans l'arbre.
+  -- Nullius : STC renomme sa techno en nullius-* dans son data stage, chargé
+  -- avant le nôtre (dépendance), donc le nom est déjà à jour quand on le lit.
+  tech_prereq         = { "smart-train-combinator" },
+  tech_prereq_nullius = { "nullius-smart-train-combinator" },
 }
